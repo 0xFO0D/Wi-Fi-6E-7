@@ -3,104 +3,12 @@
 High-performance Linux kernel driver for next-generation Wi-Fi 6E/7 devices with advanced features including MLO (Multi-Link Operation), 320MHz channels, and 4K QAM support.
 
 ## Hardware Architecture 
-```plantuml
-@startuml
-!theme plain
-skinparam componentStyle rectangle
-package "RF Frontend" {
-component "RF Core" as RF
-component "PLL" as PLL
-component "ADC/DAC" as ADC
-}
-package "Baseband" {
-component "PHY Layer" as PHY {
-component "FFT/IFFT" as FFT
-component "FEC" as FEC
-component "Equalizer" as EQ
-}
-component "MAC Layer" as MAC {
-component "TX Engine" as TX
-component "RX Engine" as RX
-component "Queue Manager" as QM
-}
-}
-package "System Interface" {
-component "PCIe Controller" as PCIE
-component "DMA Engine" as DMA
-component "Memory Controller" as MEM
-}
-RF <--> ADC
-ADC <--> PHY
-PHY <--> MAC
-MAC <--> DMA
-DMA <--> PCIE
-PCIE <--> MEM
-@enduml
-```
+![image1](https://www.plantuml.com/plantuml/png/PL5DRy8m3BtdLtZS4NzWckXAgo5HYGyExEWLhwj8t2vD3zt4Vvz9gorX1ySyF_gUyxBi75hN6wqUt0SPWbPZpQgxrDoYHGDbOzg6YTt13Ph0KkcGAqsgnVA25S5idqDk6tR4vnbygzyFF9CsbcQ07UppaDbkDdugFHmdgtInIb9FoMzr_NDvnexUy9_5zkKLDZYG7UK4HNIU7nThEJmhFUAoqKXwECu-UzJrrwIOxTGrP8ia3Vm4nNx74sHSrKoUFfwYD29k7t6xddg20XchINfNY75m_yFGEJAmPaVs7Kkwpo5TauJDpZPQJn8ooyB_h8eat41WT3CoZHtkDOhijeSyvEDy_kJVH6e44hQI6e4aeQGyyCfI8_1Rt0uFlU2I-DmR_GC0)
 
 ## Signal Processing Pipeline
-```plantuml
-@startuml
-!theme plain
-skinparam sequenceMessageAlign center
-participant "Host CPU" as HOST
-participant "DMA Engine" as DMA
-participant "MAC" as MAC
-participant "PHY" as PHY
-participant "RF" as RF
-participant "Antenna" as ANT
-== TX Path ==
-HOST -> DMA: Write TX Descriptor
-activate DMA
-DMA -> MAC: Frame Data Transfer
-activate MAC
-MAC -> PHY: PHY Protocol Data
-activate PHY
-PHY -> RF: I/Q Samples
-activate RF
-RF -> ANT: RF Signal
-deactivate RF
-deactivate PHY
-deactivate MAC
-deactivate DMA
-== RX Path ==
-ANT -> RF: RF Signal
-activate RF
-RF -> PHY: I/Q Samples
-activate PHY
-PHY -> MAC: Decoded Symbols
-activate MAC
-MAC -> DMA: Frame Assembly
-activate DMA
-DMA -> HOST: RX Completion
-deactivate DMA
-deactivate MAC
-deactivate PHY
-deactivate RF
-@enduml
-```
-
+![image2](https://www.plantuml.com/plantuml/png/VLB1JeD04Btp5MFlnZi9fgILr4CL0QCUfp2s6vTTt9sQzE-TtMW0Gpmicvdtc7dlmTepEZxtEhdY4_K4WqPb4l-Xp80EU_3qUIRJqfwynoFbMXqDj6ION28CLgqQq32iTjOpRChd5Q27tMFTpE7jFeSxSrI68a7AERxFDn6GUmwKkxS8o3q7gYBsgsBUpaMQCHYn_A59iWoQLoYHJv1bIH06rxTXVmelJZ45T4k-TMfWwn9iMNqXKrGe9v15Kmg5f25TP8J6eV7lD247rN82MNIcuG6bisnRg-Cx8pNu2B1GgoA5-vidgB4VDFcH8vwgGXZ1G2eLr98wwgIZAKMgwL0fftAad5gH6Aen1fdx8s2Slh0-U9agN7GHqzbIQplgeBxq1wlzOZ8YupV6t7lg3_go67VuHcbGkx5XAojh_hgPU_qd2R6o9jF93_uD)
 ## Memory Architecture
-```plantuml
-@startuml
-!theme plain
-skinparam componentStyle rectangle
-package "PCIe Memory Space" {
-component "BAR0: Control Registers\n0x0000_0000 - 0x0000_FFFF" as BAR0
-component "BAR1: TX/RX Queues\n0x0001_0000 - 0x0001_FFFF" as BAR1
-component "BAR2: DMA Descriptors\n0x0002_0000 - 0x0002_FFFF" as BAR2
-}
-package "Internal Memory" {
-component "PHY Memory\n128KB" as PHYMEM
-component "MAC Memory\n256KB" as MACMEM
-component "Packet Buffer\n512KB" as PBUF
-}
-BAR0 --> PHYMEM
-BAR1 --> MACMEM
-BAR2 --> PBUF
-@enduml
-```
-
+![image3](https://www.plantuml.com/plantuml/png/NP7HQhD048NlVOhvlGz_TY6bvA8aceQ68bZJGWf2MUp4IjPPsLsXeVJTkovggtCXdF7CDtDqOwpGjgrbyCz-O8tGI55HO2uLDKAB6WfLDugGxD5U9OB6mWeg9GQDA2wYH0ZJ-82GOAtq5OwkYo5y1UCOXD4sMwuXLcIraf1XMHcBskIq_5owUkiUi81UxLs580nqOpCCMyFpwNzsWgSMMnm8R49W4mAR4VWQTiaMTcWANJLMZMVm2OHF83pu_arx88kQXEmJpxAc3w_zYvmOltsCFCDra_laho_PngEFhsvwd-lEVAbRYnQYzdn6dTEAyG4PlUpTMTr7WiNYRbZHHVRQexpcNdl_1kdT_UeV)
 ## Build Requirements
 
 - Linux Kernel Headers (≥ 6.1)

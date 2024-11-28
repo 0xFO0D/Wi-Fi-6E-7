@@ -93,6 +93,14 @@ struct wifi67_priv {
     
     /* Debug interface */
     struct dentry *debugfs_dir;
+    
+    /* MAC layer */
+    struct {
+        struct mac_stats stats;
+        struct mac_ba_session *ba_sessions[MAX_TID_COUNT];
+        struct mac_mlo_link *mlo_links[MAX_MLO_LINKS];
+        spinlock_t lock;
+    } mac;
 };
 
 /* Function prototypes */
