@@ -31,6 +31,12 @@ struct wifi67_priv {
         void *virt;
         size_t size;
     } dma_region[4];
+
+    struct {
+        struct phy_stats stats;
+        struct phy_calibration cal;
+        spinlock_t lock;
+    } phy;
 };
 
 static int __init wifi67_init(void)
