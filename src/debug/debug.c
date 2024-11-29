@@ -1,11 +1,21 @@
 #include <linux/module.h>
 #include <linux/debugfs.h>
-#include <linux/seq_file.h>
-#include <linux/uaccess.h>
-#include "../../include/core/wifi67.h"
-#include "../../include/debug/debug_core.h"
+#include <linux/delay.h>
+#include "../../include/debug/debug.h"
 
-/* Debug level read/write handlers */
+void wifi67_debug(struct wifi67_priv *priv, u32 level, const char *fmt, ...)
+{
+    va_list args;
+    struct wifi67_debugfs *debugfs = &priv->debugfs;
+
+    if (!(debugfs->debug_mask & level))
+        return;
+
+    va_start(args, fmt);
+    vprintk(fmt, args);
+    va_end(args);
+}
+
 static ssize_t wifi67_debug_level_read(struct file *file,
                                      char __user *user_buf,
                                      size_t count, loff_t *ppos)
@@ -34,34 +44,43 @@ static ssize_t wifi67_debug_level_write(struct file *file,
     return count;
 }
 
-static const struct file_operations wifi67_debug_level_fops = {
+static const struct file_operations wifi67_debug_level_ops = {
     .read = wifi67_debug_level_read,
     .write = wifi67_debug_level_write,
     .open = simple_open,
     .llseek = default_llseek,
 };
 
-/* Initialize debugfs */
 int wifi67_debugfs_init(struct wifi67_priv *priv)
 {
     struct wifi67_debugfs *debugfs = &priv->debugfs;
+    char dirname[32];
+    int ret = 0;
 
-    debugfs->dir = debugfs_create_dir(WIFI67_DBG_DIR_NAME, NULL);
-    if (IS_ERR(debugfs->dir))
-        return PTR_ERR(debugfs->dir);
+    snprintf(dirname, sizeof(dirname), "wifi67-%s",
+             dev_name(&priv->pdev->dev));
 
-    debugfs->debug_level = debugfs_create_file(WIFI67_DBG_LEVEL_NAME,
-                                             0644, debugfs->dir,
-                                             priv, &wifi67_debug_level_fops);
-    if (IS_ERR(debugfs->debug_level))
-        goto err_remove_dir;
+    debugfs->dir = debugfs_create_dir(dirname, NULL);
+    if (IS_ERR(debugfs->dir)) {
+        ret = PTR_ERR(debugfs->dir);
+        goto err;
+    }
 
-    debugfs->debug_mask = WIFI67_DBG_ERROR | WIFI67_DBG_WARNING;
+    debugfs->debug_level = debugfs_create_file("debug_level", 0600,
+                                             debugfs->dir, priv,
+                                             &wifi67_debug_level_ops);
+    if (IS_ERR(debugfs->debug_level)) {
+        ret = PTR_ERR(debugfs->debug_level);
+        goto err_remove;
+    }
+
+    debugfs->debug_mask = WIFI67_DEBUG_ERROR | WIFI67_DEBUG_WARNING;
     return 0;
 
-err_remove_dir:
+err_remove:
     debugfs_remove_recursive(debugfs->dir);
-    return PTR_ERR(debugfs->debug_level);
+err:
+    return ret;
 }
 
 void wifi67_debugfs_remove(struct wifi67_priv *priv)
@@ -69,14 +88,6 @@ void wifi67_debugfs_remove(struct wifi67_priv *priv)
     debugfs_remove_recursive(priv->debugfs.dir);
 }
 
-void wifi67_dbg(struct wifi67_priv *priv, u32 level, const char *fmt, ...)
-{
-    va_list args;
-
-    if (!(priv->debugfs.debug_mask & level))
-        return;
-
-    va_start(args, fmt);
-    vprintk(fmt, args);
-    va_end(args);
-} 
+EXPORT_SYMBOL_GPL(wifi67_debug);
+EXPORT_SYMBOL_GPL(wifi67_debugfs_init);
+EXPORT_SYMBOL_GPL(wifi67_debugfs_remove); 

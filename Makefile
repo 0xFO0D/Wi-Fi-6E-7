@@ -4,6 +4,7 @@ wifi67-objs := \
     src/core/main.o \
     src/core/bands.o \
     src/core/caps.o \
+    src/core/ops.o \
     src/hal/hardware.o \
     src/mac/mac_core.o \
     src/phy/phy_core.o \

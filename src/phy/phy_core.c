@@ -1,141 +1,248 @@
-#include <linux/module.h>
-#include <linux/pci.h>
-#include <net/mac80211.h>
-
+#include <linux/kernel.h>
+#include <linux/slab.h>
+#include <linux/io.h>
 #include "../../include/phy/phy_core.h"
-#include "../../include/core/wifi67.h"
+#include "../../include/mac/mac_core.h"
 
-/* Register definitions */
-#define WIFI67_PHY_CTRL        0x0000
-#define WIFI67_PHY_STATUS      0x0004
-#define WIFI67_PHY_CONFIG      0x0008
-#define WIFI67_PHY_POWER      0x000C
+#define WIFI67_PHY_MIN_RSSI -100
+#define WIFI67_PHY_MAX_RSSI -10
+#define WIFI67_PHY_MIN_POWER 0
+#define WIFI67_PHY_MAX_POWER 30
 
-/* Control register bits */
-#define PHY_CTRL_ENABLE       BIT(0)
-#define PHY_CTRL_RESET        BIT(1)
-#define PHY_CTRL_TX_EN        BIT(2)
-#define PHY_CTRL_RX_EN        BIT(3)
-#define PHY_CTRL_PS_EN        BIT(4)
-
-static void wifi67_phy_hw_init(struct wifi67_priv *priv)
+static int wifi67_phy_hw_init(struct wifi67_priv *priv)
 {
-    struct wifi67_phy *phy = &priv->phy;
-    u32 reg;
+    struct wifi67_phy *phy = priv->phy_dev;
+    u32 val;
+    int retry = 100;
 
     /* Reset PHY */
-    iowrite32(PHY_CTRL_RESET, phy->regs + WIFI67_PHY_CTRL);
+    writel(WIFI67_PHY_CTRL_RESET, phy->regs + WIFI67_PHY_REG_CTRL);
     udelay(100);
-    
+
     /* Clear reset and enable PHY */
-    reg = PHY_CTRL_ENABLE | PHY_CTRL_TX_EN | PHY_CTRL_RX_EN;
-    iowrite32(reg, phy->regs + WIFI67_PHY_CTRL);
-    
-    /* Set default configuration */
-    reg = WIFI67_PHY_CAP_BE | WIFI67_PHY_CAP_320MHZ | 
-          WIFI67_PHY_CAP_4K_QAM | WIFI67_PHY_CAP_MULTI_RU;
-    iowrite32(reg, phy->regs + WIFI67_PHY_CONFIG);
+    val = WIFI67_PHY_CTRL_ENABLE | WIFI67_PHY_CTRL_AGC_EN | WIFI67_PHY_CTRL_CALIB_EN;
+    writel(val, phy->regs + WIFI67_PHY_REG_CTRL);
+
+    /* Wait for PHY to be ready */
+    while (retry--) {
+        val = readl(phy->regs + WIFI67_PHY_REG_STATUS);
+        if (val & WIFI67_PHY_STATUS_READY)
+            break;
+        udelay(100);
+    }
+
+    if (retry < 0) {
+        pr_err("PHY failed to become ready\n");
+        return -ETIMEDOUT;
+    }
+
+    /* Initialize AGC */
+    writel(0x50, phy->regs + WIFI67_PHY_REG_AGC);
+    phy->agc_gain = 0x50;
+
+    /* Set default power level */
+    writel(0x1F, phy->regs + WIFI67_PHY_REG_POWER);
+    phy->current_power = 0x1F;
+
+    /* Set default channel and bandwidth */
+    writel(36, phy->regs + WIFI67_PHY_REG_CHANNEL);
+    writel(0, phy->regs + WIFI67_PHY_REG_BANDWIDTH);
+    phy->current_channel = 36;
+    phy->current_band = NL80211_BAND_5GHZ;
+
+    /* Enable antenna diversity */
+    writel(0x3, phy->regs + WIFI67_PHY_REG_ANTENNA);
+
+    /* Start calibration */
+    val = readl(phy->regs + WIFI67_PHY_REG_CTRL);
+    val |= WIFI67_PHY_CTRL_CALIB_EN;
+    writel(val, phy->regs + WIFI67_PHY_REG_CTRL);
+
+    /* Wait for calibration to complete */
+    retry = 100;
+    while (retry--) {
+        val = readl(phy->regs + WIFI67_PHY_REG_STATUS);
+        if (val & WIFI67_PHY_STATUS_CALIB_DONE)
+            break;
+        udelay(100);
+    }
+
+    if (retry < 0) {
+        pr_err("PHY calibration failed\n");
+        return -ETIMEDOUT;
+    }
+
+    phy->enabled = true;
+    return 0;
 }
 
 int wifi67_phy_init(struct wifi67_priv *priv)
 {
-    struct wifi67_phy *phy = &priv->phy;
-    
-    /* Initialize locks */
+    struct wifi67_phy *phy;
+    int ret;
+
+    phy = kzalloc(sizeof(*phy), GFP_KERNEL);
+    if (!phy)
+        return -ENOMEM;
+
+    priv->phy_dev = phy;
     spin_lock_init(&phy->lock);
-    
-    /* Map PHY registers */
-    phy->regs = priv->mmio + 0x2000;  /* PHY register offset */
-    
-    /* Set initial state */
-    phy->state = WIFI67_PHY_OFF;
-    phy->ps_enabled = false;
-    
-    /* Initialize hardware */
-    wifi67_phy_hw_init(priv);
-    
+
+    phy->regs = priv->hw_info->membase + priv->hw_info->phy_offset;
+
+    ret = wifi67_phy_hw_init(priv);
+    if (ret)
+        goto err_free_phy;
+
     return 0;
+
+err_free_phy:
+    kfree(phy);
+    priv->phy_dev = NULL;
+    return ret;
 }
 
 void wifi67_phy_deinit(struct wifi67_priv *priv)
 {
-    struct wifi67_phy *phy = &priv->phy;
-    
+    struct wifi67_phy *phy = priv->phy_dev;
+    unsigned long flags;
+
+    if (!phy)
+        return;
+
+    spin_lock_irqsave(&phy->lock, flags);
+
     /* Disable PHY */
-    iowrite32(0, phy->regs + WIFI67_PHY_CTRL);
-    
-    /* Reset statistics */
-    memset(&phy->stats, 0, sizeof(phy->stats));
+    writel(0, phy->regs + WIFI67_PHY_REG_CTRL);
+
+    /* Clear any pending calibration */
+    writel(0, phy->regs + WIFI67_PHY_REG_CALIBRATION);
+
+    phy->enabled = false;
+
+    spin_unlock_irqrestore(&phy->lock, flags);
+
+    kfree(phy);
+    priv->phy_dev = NULL;
 }
 
 int wifi67_phy_start(struct wifi67_priv *priv)
 {
-    struct wifi67_phy *phy = &priv->phy;
-    u32 reg;
-    
-    spin_lock(&phy->lock);
-    
-    /* Enable PHY */
-    reg = ioread32(phy->regs + WIFI67_PHY_CTRL);
-    reg |= PHY_CTRL_ENABLE | PHY_CTRL_TX_EN | PHY_CTRL_RX_EN;
-    iowrite32(reg, phy->regs + WIFI67_PHY_CTRL);
-    
-    phy->state = WIFI67_PHY_READY;
-    
-    spin_unlock(&phy->lock);
-    
+    struct wifi67_phy *phy = priv->phy_dev;
+    unsigned long flags;
+    u32 val;
+
+    if (!phy)
+        return -EINVAL;
+
+    spin_lock_irqsave(&phy->lock, flags);
+
+    val = readl(phy->regs + WIFI67_PHY_REG_CTRL);
+    val |= WIFI67_PHY_CTRL_ENABLE;
+    writel(val, phy->regs + WIFI67_PHY_REG_CTRL);
+
+    /* Enable AGC */
+    val |= WIFI67_PHY_CTRL_AGC_EN;
+    writel(val, phy->regs + WIFI67_PHY_REG_CTRL);
+
+    phy->enabled = true;
+
+    spin_unlock_irqrestore(&phy->lock, flags);
+
     return 0;
 }
 
 void wifi67_phy_stop(struct wifi67_priv *priv)
 {
-    struct wifi67_phy *phy = &priv->phy;
-    
-    spin_lock(&phy->lock);
-    
-    /* Disable PHY */
-    iowrite32(0, phy->regs + WIFI67_PHY_CTRL);
-    phy->state = WIFI67_PHY_OFF;
-    
-    spin_unlock(&phy->lock);
+    struct wifi67_phy *phy = priv->phy_dev;
+    unsigned long flags;
+    u32 val;
+
+    if (!phy)
+        return;
+
+    spin_lock_irqsave(&phy->lock, flags);
+
+    val = readl(phy->regs + WIFI67_PHY_REG_CTRL);
+    val &= ~(WIFI67_PHY_CTRL_ENABLE | WIFI67_PHY_CTRL_AGC_EN);
+    writel(val, phy->regs + WIFI67_PHY_REG_CTRL);
+
+    phy->enabled = false;
+
+    spin_unlock_irqrestore(&phy->lock, flags);
 }
 
-int wifi67_phy_config(struct wifi67_priv *priv, struct ieee80211_conf *conf)
+int wifi67_phy_config(struct wifi67_priv *priv, u32 channel, u32 band)
 {
-    struct wifi67_phy *phy = &priv->phy;
-    u32 reg;
-    
-    spin_lock(&phy->lock);
-    
-    /* Update PHY configuration */
-    reg = ioread32(phy->regs + WIFI67_PHY_CONFIG);
-    
-    if (conf->chandef.width >= NL80211_CHAN_WIDTH_320)
-        reg |= WIFI67_PHY_CAP_320MHZ;
-    
-    iowrite32(reg, phy->regs + WIFI67_PHY_CONFIG);
-    
-    spin_unlock(&phy->lock);
-    
+    struct wifi67_phy *phy = priv->phy_dev;
+    unsigned long flags;
+    u32 val;
+
+    if (!phy || !phy->enabled)
+        return -EINVAL;
+
+    spin_lock_irqsave(&phy->lock, flags);
+
+    /* Set channel */
+    writel(channel, phy->regs + WIFI67_PHY_REG_CHANNEL);
+    phy->current_channel = channel;
+    phy->current_band = band;
+
+    /* Trigger recalibration */
+    val = readl(phy->regs + WIFI67_PHY_REG_CTRL);
+    val |= WIFI67_PHY_CTRL_CALIB_EN;
+    writel(val, phy->regs + WIFI67_PHY_REG_CTRL);
+
+    spin_unlock_irqrestore(&phy->lock, flags);
+
     return 0;
 }
 
-void wifi67_phy_set_power(struct wifi67_priv *priv, bool enable)
+int wifi67_phy_set_power(struct wifi67_priv *priv, u32 power_level)
 {
-    struct wifi67_phy *phy = &priv->phy;
-    u32 reg;
-    
-    spin_lock(&phy->lock);
-    
-    reg = ioread32(phy->regs + WIFI67_PHY_CTRL);
-    
-    if (enable)
-        reg &= ~PHY_CTRL_PS_EN;
-    else
-        reg |= PHY_CTRL_PS_EN;
-    
-    iowrite32(reg, phy->regs + WIFI67_PHY_CTRL);
-    phy->ps_enabled = !enable;
-    
-    spin_unlock(&phy->lock);
-} 
+    struct wifi67_phy *phy = priv->phy_dev;
+    unsigned long flags;
+
+    if (!phy || !phy->enabled)
+        return -EINVAL;
+
+    if (power_level > WIFI67_PHY_MAX_POWER)
+        return -EINVAL;
+
+    spin_lock_irqsave(&phy->lock, flags);
+
+    writel(power_level, phy->regs + WIFI67_PHY_REG_POWER);
+    phy->current_power = power_level;
+
+    spin_unlock_irqrestore(&phy->lock, flags);
+
+    return 0;
+}
+
+int wifi67_phy_get_rssi(struct wifi67_priv *priv)
+{
+    struct wifi67_phy *phy = priv->phy_dev;
+    unsigned long flags;
+    s32 rssi;
+
+    if (!phy || !phy->enabled)
+        return WIFI67_PHY_MIN_RSSI;
+
+    spin_lock_irqsave(&phy->lock, flags);
+
+    rssi = readl(phy->regs + WIFI67_PHY_REG_RSSI);
+    /* Convert raw RSSI to dBm */
+    rssi = -90 + ((rssi & 0xFF) / 2);
+
+    spin_unlock_irqrestore(&phy->lock, flags);
+
+    return rssi;
+}
+
+EXPORT_SYMBOL_GPL(wifi67_phy_init);
+EXPORT_SYMBOL_GPL(wifi67_phy_deinit);
+EXPORT_SYMBOL_GPL(wifi67_phy_start);
+EXPORT_SYMBOL_GPL(wifi67_phy_stop);
+EXPORT_SYMBOL_GPL(wifi67_phy_config);
+EXPORT_SYMBOL_GPL(wifi67_phy_set_power);
+EXPORT_SYMBOL_GPL(wifi67_phy_get_rssi); 

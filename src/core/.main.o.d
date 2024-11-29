@@ -373,12 +373,23 @@ main.o: \
  include/linux/hashtable.h include/linux/crc32.h include/linux/bitrev.h \
  arch/x86/include/generated/asm/unaligned.h \
  include/asm-generic/unaligned.h include/linux/unaligned/packed_struct.h \
- include/net/cfg80211.h include/linux/ethtool.h \
+ include/net/mac80211.h include/net/cfg80211.h include/linux/ethtool.h \
  include/uapi/linux/ethtool.h include/uapi/linux/net_tstamp.h \
  include/uapi/linux/rfkill.h include/linux/debugfs.h \
  include/uapi/linux/nl80211.h include/linux/rfkill.h include/linux/leds.h \
  include/dt-bindings/leds/common.h include/net/regulatory.h \
+ include/net/codel.h include/net/ieee80211_radiotap.h \
+ /home/sysarch/htaytibtagine_workspace/wifi-6e-7-driver/src/core/../../include/core/wifi67.h \
+ /home/sysarch/htaytibtagine_workspace/wifi-6e-7-driver/src/core/../../include/core/../debug/debug.h \
+ /home/sysarch/htaytibtagine_workspace/wifi-6e-7-driver/src/core/../../include/core/../debug/../core/wifi67.h \
+ /home/sysarch/htaytibtagine_workspace/wifi-6e-7-driver/src/core/../../include/core/../diag/hw_diag.h \
+ /home/sysarch/htaytibtagine_workspace/wifi-6e-7-driver/src/core/../../include/core/../power/power.h \
+ /home/sysarch/htaytibtagine_workspace/wifi-6e-7-driver/src/core/../../include/core/../firmware/firmware.h \
+ include/linux/firmware.h \
+ /home/sysarch/htaytibtagine_workspace/wifi-6e-7-driver/src/core/../../include/core/../debug/debugfs.h \
+ /home/sysarch/htaytibtagine_workspace/wifi-6e-7-driver/src/core/../../include/core/../perf/perf.h \
+ /home/sysarch/htaytibtagine_workspace/wifi-6e-7-driver/src/core/../../include/core/features.h \
+ /home/sysarch/htaytibtagine_workspace/wifi-6e-7-driver/src/core/../../include/core/caps.h \
  /home/sysarch/htaytibtagine_workspace/wifi-6e-7-driver/src/core/../../include/core/wifi67.h \
  /home/sysarch/htaytibtagine_workspace/wifi-6e-7-driver/src/core/../../include/core/bands.h \
- /home/sysarch/htaytibtagine_workspace/wifi-6e-7-driver/src/core/../../include/core/caps.h \
- /home/sysarch/htaytibtagine_workspace/wifi-6e-7-driver/src/core/../../include/core/ops.h
+ /home/sysarch/htaytibtagine_workspace/wifi-6e-7-driver/src/core/../../include/debug/debug.h

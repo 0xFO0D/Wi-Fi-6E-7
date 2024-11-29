@@ -2,47 +2,24 @@
 #define _WIFI67_TYPES_H_
 
 #include <linux/types.h>
-#include <linux/netdevice.h>
-#include <linux/pci.h>
+#include <linux/skbuff.h>
+#include <linux/spinlock.h>
 #include <net/mac80211.h>
-#include "wifi67_forward.h"
 
-#include "../mac/mac_core.h"
-#include "../phy/phy_core.h"
-#include "../dma/dma_core.h"
-#include "../hal/hardware.h"
-#include "../regulatory/reg_types.h"
-#include "../crypto/crypto_core.h"
-#include "../firmware/fw_types.h"
-#include "../debug/debug_types.h"
-#include "../perf/perf_types.h"
-#include "../diag/diag_types.h"
+/* Forward declarations */
+struct wifi67_priv;
+struct wifi67_mac;
+struct wifi67_phy;
+struct wifi67_crypto_ctx;
 
-/* Main driver private structure */
-struct wifi67_priv {
-    struct ieee80211_hw *hw;
-    struct pci_dev *pdev;
-    
-    /* Memory-mapped I/O */
-    void __iomem *mmio;
-    
-    /* Component structures */
-    struct wifi67_mac mac;
-    struct wifi67_phy phy;
-    struct wifi67_dma dma;
-    struct wifi67_hw hal;
-    struct wifi67_regulatory reg;
-    struct wifi67_crypto crypto;
-    struct wifi67_firmware fw;
-    struct wifi67_debugfs debugfs;
-    struct wifi67_perf_monitor perf;
-    struct wifi67_hw_diag hw_diag;
-    
-    /* Locks */
-    spinlock_t lock;
-    
-    /* Work items */
-    struct work_struct tx_work;
-} __packed __aligned(8);
+/* Common structures */
+struct wifi67_stats {
+    u64 tx_packets;
+    u64 tx_bytes;
+    u64 rx_packets;
+    u64 rx_bytes;
+    u32 tx_errors;
+    u32 rx_errors;
+};
 
 #endif /* _WIFI67_TYPES_H_ */ 

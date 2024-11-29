@@ -2,61 +2,37 @@
 #define _WIFI67_MAC_CORE_H_
 
 #include <linux/types.h>
-#include <linux/skbuff.h>
-#include <linux/atomic.h>
-#include <net/mac80211.h>
-#include "mac_defs.h"
-#include "mac_types.h"
+#include "../core/wifi67.h"
+
+#define WIFI67_MAC_MAX_QUEUES    4
+#define WIFI67_MAC_BUFFER_SIZE   2048
 
 struct wifi67_mac_queue {
-    struct sk_buff_head skbs;
+    void __iomem *regs;
+    u32 head;
+    u32 tail;
     spinlock_t lock;
-    bool stopped;
-    u32 flags;
-    u32 hw_queue;
 };
 
 struct wifi67_mac {
-    /* Hardware registers */
     void __iomem *regs;
-    
-    /* MAC address */
-    u8 addr[ETH_ALEN];
-    
-    /* Configuration */
-    struct wifi67_mac_config config;
-    struct wifi67_mac_stats stats;
-    
-    /* State management */
-    atomic_t state;
-    
-    /* TX/RX queues */
-    struct wifi67_mac_queue tx_queues[WIFI67_NUM_TX_QUEUES];
-    struct wifi67_mac_queue rx_queues[WIFI67_NUM_RX_QUEUES];
-    
-    /* Work items */
-    struct work_struct tx_work;
-    
-    /* Locks */
+    struct wifi67_mac_queue queues[WIFI67_MAC_MAX_QUEUES];
     spinlock_t lock;
+    u32 irq_mask;
 };
 
-/* Forward declaration of wifi67_priv */
-struct wifi67_priv;
+struct wifi67_hw_info {
+    void __iomem *membase;
+    u32 mac_offset;
+    u32 phy_offset;
+    u32 reg_size;
+};
 
-/* Function declarations */
 int wifi67_mac_init(struct wifi67_priv *priv);
 void wifi67_mac_deinit(struct wifi67_priv *priv);
-int wifi67_mac_start(struct wifi67_priv *priv);
-void wifi67_mac_stop(struct wifi67_priv *priv);
-int wifi67_mac_tx(struct wifi67_priv *priv, struct sk_buff *skb,
-                 struct ieee80211_tx_control *control);
-void wifi67_mac_rx(struct wifi67_priv *priv, struct sk_buff *skb);
-int wifi67_mac_set_key(struct wifi67_priv *priv, enum set_key_cmd cmd,
-                     struct ieee80211_vif *vif, struct ieee80211_sta *sta,
-                     struct ieee80211_key_conf *key);
-int wifi67_mac_config(struct wifi67_priv *priv, u32 changed);
-
-/* Internal functions - moved to source file */
+int wifi67_mac_tx(struct wifi67_priv *priv, struct sk_buff *skb, u8 queue);
+void wifi67_mac_rx(struct wifi67_priv *priv);
+void wifi67_mac_irq_enable(struct wifi67_priv *priv);
+void wifi67_mac_irq_disable(struct wifi67_priv *priv);
 
 #endif /* _WIFI67_MAC_CORE_H_ */ 

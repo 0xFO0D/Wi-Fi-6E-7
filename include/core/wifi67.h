@@ -1,46 +1,49 @@
 #ifndef _WIFI67_H_
 #define _WIFI67_H_
 
+#include <linux/types.h>
 #include <linux/pci.h>
 #include <linux/ieee80211.h>
+#include <linux/spinlock.h>
+#include "../debug/debug.h"
+#include "../diag/hw_diag.h"
+#include "../power/power.h"
+#include "../firmware/firmware.h"
+#include "../debug/debugfs.h"
+#include "../perf/perf.h"
+#include "features.h"
 
-/* PCI Device IDs */
-#define PCI_VENDOR_ID_WIFI67    0x0666  /* Example vendor ID */
-#define PCI_DEVICE_ID_WIFI67    0x0667  /* Example device ID */
-
-/* Driver private data structure */
+/* Main driver private structure */
 struct wifi67_priv {
     struct ieee80211_hw *hw;
     struct pci_dev *pdev;
+    
     struct ieee80211_supported_band bands[NUM_NL80211_BANDS];
-    void __iomem *mmio;
+    struct wifi67_features features;
+    struct wifi67_mac *mac_dev;
+    struct wifi67_phy *phy_dev;
+    struct wifi67_hw_info *hw_info;
+    struct wifi67_crypto_ctx *crypto_ctx;
+    struct wifi67_firmware fw;
+    struct wifi67_debugfs debugfs;
+    struct wifi67_perf_monitor perf;
+    struct wifi67_hw_diag hw_diag;
+    struct wifi67_power_mgmt power;
+    
     spinlock_t lock;
     
-    /* DMA rings */
-    struct wifi67_dma_ring tx_ring;
-    struct wifi67_dma_ring rx_ring;
-    
-    /* Power management */
-    bool ps_enabled;
-    u32 ps_state;
-    
-    /* Hardware state */
-    bool hw_initialized;
-    u32 hw_revision;
-    
-    /* Firmware */
-    struct wifi67_fw_info fw;
-    
-    /* Statistics */
-    struct wifi67_stats stats;
+    bool initialized;
+    bool suspended;
 };
 
-/* Hardware operations */
-extern const struct ieee80211_ops wifi67_ops;
-
 /* Function declarations */
+int wifi67_core_init(struct pci_dev *pdev, struct ieee80211_hw *hw);
+void wifi67_core_deinit(struct pci_dev *pdev, struct ieee80211_hw *hw);
+int wifi67_core_start(struct wifi67_priv *priv);
+void wifi67_core_stop(struct wifi67_priv *priv);
+int wifi67_core_suspend(struct wifi67_priv *priv);
+int wifi67_core_resume(struct wifi67_priv *priv);
 int wifi67_setup_pci(struct wifi67_priv *priv);
 void wifi67_cleanup_pci(struct wifi67_priv *priv);
-void wifi67_setup_hw_caps(struct ieee80211_hw *hw);
 
 #endif /* _WIFI67_H_ */ 
