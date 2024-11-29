@@ -1,175 +1,182 @@
+#include <linux/module.h>
+#include <linux/pci.h>
+#include <linux/interrupt.h>
+#include <linux/ioport.h>
 #include <linux/delay.h>
-#include <linux/jiffies.h>
+#include <linux/iopoll.h>
+
 #include "../../include/hal/hardware.h"
 #include "../../include/core/wifi67.h"
+#include "../../include/dma/dma_core.h"
 
-static inline u32 hw_read32(struct wifi67_priv *priv, u32 reg)
+/* Hardware version constants */
+#define WIFI67_HW_VERSION_ID      0x67670001
+#define WIFI67_HW_VERSION_MASK    0xFFFF0000
+
+bool wifi67_hw_check_version(struct wifi67_priv *priv)
 {
-    return readl(priv->mmio + reg);
+    struct wifi67_hw *hw = &priv->hal;
+    u32 version;
+
+    version = ioread32(hw->regs + WIFI67_HW_VERSION);
+    hw->version = version;
+
+    if ((version & WIFI67_HW_VERSION_MASK) != 
+        (WIFI67_HW_VERSION_ID & WIFI67_HW_VERSION_MASK)) {
+        dev_err(&priv->pdev->dev, 
+                "Invalid hardware version: %08x\n", version);
+        return false;
+    }
+
+    return true;
 }
 
-static inline void hw_write32(struct wifi67_priv *priv, u32 reg, u32 val)
+static void wifi67_hw_detect_caps(struct wifi67_priv *priv)
 {
-    writel(val, priv->mmio + reg);
-}
+    struct wifi67_hw *hw = &priv->hal;
+    u32 caps;
 
-int wifi67_hw_wait_for_bit(struct wifi67_priv *priv, u32 reg,
-                          u32 bit, int timeout)
-{
-    unsigned long end = jiffies + msecs_to_jiffies(timeout);
-    u32 val;
+    caps = ioread32(hw->regs + WIFI67_HW_CONFIG);
+    hw->capabilities = caps;
 
-    do {
-        val = hw_read32(priv, reg);
-        if (val & bit)
-            return 0;
-        udelay(10);
-    } while (time_before(jiffies, end));
-
-    return -ETIMEDOUT;
+    dev_info(&priv->pdev->dev, 
+             "Hardware capabilities: %08x\n", caps);
 }
 
 int wifi67_hw_init(struct wifi67_priv *priv)
 {
-    u32 val;
+    struct wifi67_hw *hw = &priv->hal;
 
+    /* Initialize locks */
+    spin_lock_init(&hw->irq_lock);
+
+    /* Map hardware registers */
+    hw->regs = priv->mmio;
+    
     /* Check hardware version */
-    val = hw_read32(priv, HW_REG_VERSION);
-    if (val != 0x67670001) {
-        pr_err("wifi67: Invalid hardware version 0x%08x\n", val);
+    if (!wifi67_hw_check_version(priv))
         return -ENODEV;
-    }
 
-    /* Reset hardware */
-    if (wifi67_hw_reset(priv))
-        return -EIO;
+    /* Detect capabilities */
+    wifi67_hw_detect_caps(priv);
 
-    /* Enable interrupts */
-    hw_write32(priv, HW_REG_INT_MASK, 0);
-    hw_write32(priv, HW_REG_CONTROL, HW_CTRL_INT_EN);
+    /* Initialize state */
+    hw->state = WIFI67_HW_OFF;
+    hw->irq_mask = 0;
 
     return 0;
 }
 
 void wifi67_hw_deinit(struct wifi67_priv *priv)
 {
-    /* Disable all interrupts */
-    hw_write32(priv, HW_REG_INT_MASK, 0xFFFFFFFF);
-    hw_write32(priv, HW_REG_CONTROL, 0);
+    struct wifi67_hw *hw = &priv->hal;
 
-    /* Put hardware into reset */
-    hw_write32(priv, HW_REG_RESET, HW_CTRL_RESET);
+    /* Disable all interrupts */
+    iowrite32(0, hw->regs + WIFI67_HW_INT_MASK);
+    
+    /* Clear any pending interrupts */
+    iowrite32(0xFFFFFFFF, hw->regs + WIFI67_HW_INT_STATUS);
+
+    hw->state = WIFI67_HW_OFF;
 }
 
 int wifi67_hw_start(struct wifi67_priv *priv)
 {
-    u32 val;
+    struct wifi67_hw *hw = &priv->hal;
+    u32 reg;
+    int ret;
 
-    /* Enable RX/TX */
-    val = hw_read32(priv, HW_REG_CONTROL);
-    val |= HW_CTRL_ENABLE | HW_CTRL_RX_EN | HW_CTRL_TX_EN;
-    hw_write32(priv, HW_REG_CONTROL, val);
+    hw->state = WIFI67_HW_BOOTING;
 
-    /* Wait for ready */
-    return wifi67_hw_wait_for_bit(priv, HW_REG_STATUS, 
-                                 HW_STATUS_READY, 1000);
+    /* Enable hardware */
+    reg = ioread32(hw->regs + WIFI67_HW_CONFIG);
+    reg |= BIT(0); /* Enable bit */
+    iowrite32(reg, hw->regs + WIFI67_HW_CONFIG);
+
+    /* Wait for hardware ready */
+    ret = readl_poll_timeout_atomic(hw->regs + WIFI67_HW_STATUS,
+                                  reg, reg & BIT(0),
+                                  1000, 1000000);
+    if (ret) {
+        dev_err(&priv->pdev->dev, "Hardware failed to start\n");
+        return ret;
+    }
+
+    hw->state = WIFI67_HW_READY;
+
+    /* Enable interrupts */
+    wifi67_hw_irq_enable(priv);
+
+    hw->state = WIFI67_HW_RUNNING;
+
+    return 0;
 }
 
 void wifi67_hw_stop(struct wifi67_priv *priv)
 {
-    u32 val;
+    struct wifi67_hw *hw = &priv->hal;
+    u32 reg;
 
-    /* Disable RX/TX */
-    val = hw_read32(priv, HW_REG_CONTROL);
-    val &= ~(HW_CTRL_RX_EN | HW_CTRL_TX_EN);
-    hw_write32(priv, HW_REG_CONTROL, val);
+    /* Disable interrupts */
+    wifi67_hw_irq_disable(priv);
 
-    /* Wait for idle */
-    wifi67_hw_wait_for_bit(priv, HW_REG_STATUS,
-                          HW_STATUS_RX_ACTIVE | HW_STATUS_TX_ACTIVE, 1000);
+    /* Disable hardware */
+    reg = ioread32(hw->regs + WIFI67_HW_CONFIG);
+    reg &= ~BIT(0); /* Clear enable bit */
+    iowrite32(reg, hw->regs + WIFI67_HW_CONFIG);
+
+    hw->state = WIFI67_HW_OFF;
 }
 
-int wifi67_hw_reset(struct wifi67_priv *priv)
+void wifi67_hw_irq_enable(struct wifi67_priv *priv)
 {
-    /* Assert reset */
-    hw_write32(priv, HW_REG_RESET, HW_CTRL_RESET);
-    udelay(100);
+    struct wifi67_hw *hw = &priv->hal;
+    unsigned long flags;
 
-    /* Deassert reset */
-    hw_write32(priv, HW_REG_RESET, 0);
-    udelay(100);
-
-    return wifi67_hw_wait_for_bit(priv, HW_REG_STATUS, 
-                                 HW_STATUS_READY, 1000);
+    spin_lock_irqsave(&hw->irq_lock, flags);
+    
+    /* Set interrupt mask */
+    hw->irq_mask = 0xFFFFFFFF; /* Enable all interrupts */
+    iowrite32(hw->irq_mask, hw->regs + WIFI67_HW_INT_MASK);
+    
+    spin_unlock_irqrestore(&hw->irq_lock, flags);
 }
 
-int wifi67_hw_set_power(struct wifi67_priv *priv, bool enable)
+void wifi67_hw_irq_disable(struct wifi67_priv *priv)
 {
-    u32 val;
+    struct wifi67_hw *hw = &priv->hal;
+    unsigned long flags;
 
-    val = hw_read32(priv, HW_REG_CONTROL);
-    if (enable)
-        val &= ~HW_CTRL_SLEEP;
-    else
-        val |= HW_CTRL_SLEEP;
-    hw_write32(priv, HW_REG_CONTROL, val);
-
-    return wifi67_hw_wait_for_bit(priv, HW_REG_STATUS,
-                                 HW_STATUS_SLEEP, 1000);
+    spin_lock_irqsave(&hw->irq_lock, flags);
+    
+    /* Clear interrupt mask */
+    hw->irq_mask = 0;
+    iowrite32(0, hw->regs + WIFI67_HW_INT_MASK);
+    
+    spin_unlock_irqrestore(&hw->irq_lock, flags);
 }
 
-u32 wifi67_hw_get_status(struct wifi67_priv *priv)
+irqreturn_t wifi67_hw_interrupt(int irq, void *data)
 {
-    return hw_read32(priv, HW_REG_STATUS);
-}
+    struct wifi67_priv *priv = data;
+    struct wifi67_hw *hw = &priv->hal;
+    u32 status;
+    irqreturn_t ret = IRQ_NONE;
 
-void wifi67_hw_enable_interrupts(struct wifi67_priv *priv)
-{
-    /* Enable all interrupts */
-    hw_write32(priv, HW_REG_INT_MASK, 0);
-}
+    /* Read interrupt status */
+    status = ioread32(hw->regs + WIFI67_HW_INT_STATUS);
+    if (!status)
+        return IRQ_NONE;
 
-void wifi67_hw_disable_interrupts(struct wifi67_priv *priv)
-{
-    /* Disable all interrupts */
-    hw_write32(priv, HW_REG_INT_MASK, 0xFFFFFFFF);
-}
+    /* Clear interrupts */
+    iowrite32(status, hw->regs + WIFI67_HW_INT_STATUS);
 
-void wifi67_hw_handle_interrupt(struct wifi67_priv *priv)
-{
-    u32 status = hw_read32(priv, HW_REG_INT_STATUS);
-    u32 handled = 0;
-
-    if (status & HW_INT_RX_DONE) {
-        /* Handle RX completion */
-        handled |= HW_INT_RX_DONE;
+    /* Handle DMA interrupts */
+    if (status & 0xFF000000) {
+        ret = wifi67_dma_isr(priv);
+        if (ret == IRQ_HANDLED)
+            return ret;
     }
 
-    if (status & HW_INT_TX_DONE) {
-        /* Handle TX completion */
-        handled |= HW_INT_TX_DONE;
-    }
-
-    if (status & HW_INT_RX_ERROR) {
-        /* Handle RX error */
-        handled |= HW_INT_RX_ERROR;
-    }
-
-    if (status & HW_INT_TX_ERROR) {
-        /* Handle TX error */
-        handled |= HW_INT_TX_ERROR;
-    }
-
-    if (status & HW_INT_TEMP_WARNING) {
-        /* Handle temperature warning */
-        handled |= HW_INT_TEMP_WARNING;
-    }
-
-    if (status & HW_INT_RADAR_DETECT) {
-        /* Handle radar detection */
-        handled |= HW_INT_RADAR_DETECT;
-    }
-
-    /* Clear handled interrupts */
-    hw_write32(priv, HW_REG_INT_STATUS, handled);
+    return IRQ_HANDLED;
 } 

@@ -1,175 +1,214 @@
+#include <linux/module.h>
 #include <linux/pci.h>
-#include <linux/netdevice.h>
 #include <linux/dma-mapping.h>
+
 #include "../../include/dma/dma_core.h"
 #include "../../include/core/wifi67.h"
 
-static inline u32 dma_read32(struct wifi67_priv *priv, u32 reg)
-{
-    return readl(priv->mmio + reg);
-}
+/* Register definitions */
+#define WIFI67_DMA_CTRL           0x0000
+#define WIFI67_DMA_STATUS         0x0004
+#define WIFI67_DMA_TX_BASE        0x0010
+#define WIFI67_DMA_RX_BASE        0x0020
 
-static inline void dma_write32(struct wifi67_priv *priv, u32 reg, u32 val)
-{
-    writel(val, priv->mmio + reg);
-}
+/* Control register bits */
+#define DMA_CTRL_ENABLE           BIT(0)
+#define DMA_CTRL_TX_EN            BIT(1)
+#define DMA_CTRL_RX_EN            BIT(2)
 
-int wifi67_dma_alloc_ring(struct wifi67_priv *priv, struct dma_ring *ring, u32 count)
+static int wifi67_dma_alloc_ring(struct wifi67_priv *priv,
+                                struct wifi67_dma_ring *ring,
+                                u16 size)
 {
-    size_t size = count * sizeof(struct dma_desc);
-    
-    ring->desc = dma_alloc_coherent(&priv->pdev->dev, size,
-                                   &ring->dma_addr, GFP_KERNEL);
+    ring->desc = dma_alloc_coherent(&priv->pdev->dev,
+                                   size * sizeof(struct wifi67_dma_desc),
+                                   &ring->desc_dma, GFP_KERNEL);
     if (!ring->desc)
         return -ENOMEM;
 
-    ring->bufs = kcalloc(count, sizeof(struct sk_buff *), GFP_KERNEL);
-    if (!ring->bufs) {
-        dma_free_coherent(&priv->pdev->dev, size,
-                         ring->desc, ring->dma_addr);
-        return -ENOMEM;
-    }
-
-    ring->size = count;
-    ring->head = ring->tail = 0;
+    ring->size = size;
+    ring->head = 0;
+    ring->tail = 0;
     spin_lock_init(&ring->lock);
 
     return 0;
 }
 
-void wifi67_dma_free_ring(struct wifi67_priv *priv, struct dma_ring *ring)
+static void wifi67_dma_free_ring(struct wifi67_priv *priv,
+                                struct wifi67_dma_ring *ring)
 {
-    size_t size = ring->size * sizeof(struct dma_desc);
-    
-    dma_free_coherent(&priv->pdev->dev, size,
-                      ring->desc, ring->dma_addr);
-    kfree(ring->bufs);
-}
-
-void wifi67_dma_reset_desc(struct dma_desc *desc)
-{
-    desc->ctrl = 0;
-    desc->len = 0;
-    desc->buf_addr = 0;
-    desc->next_desc = 0;
-    desc->skb = NULL;
-    desc->dma_addr = 0;
-}
-
-static int wifi67_dma_map_skb(struct wifi67_priv *priv, struct dma_desc *desc,
-                             struct sk_buff *skb, bool first, bool last)
-{
-    dma_addr_t mapping;
-    u32 len;
-
-    len = skb_headlen(skb);
-    mapping = dma_map_single(&priv->pdev->dev, skb->data, len, DMA_TO_DEVICE);
-    if (dma_mapping_error(&priv->pdev->dev, mapping)) {
-        dev_err(&priv->pdev->dev, "Failed to map TX buffer\n");
-        return -ENOMEM;
+    if (ring->desc) {
+        dma_free_coherent(&priv->pdev->dev,
+                         ring->size * sizeof(struct wifi67_dma_desc),
+                         ring->desc, ring->desc_dma);
+        ring->desc = NULL;
     }
-
-    desc->buf_addr = cpu_to_le64(mapping);
-    desc->len = cpu_to_le32(len);
-    desc->ctrl = DESC_CTRL_OWN | DESC_CTRL_SOF;
-
-    if (last) {
-        desc->ctrl |= DESC_CTRL_EOF | DESC_CTRL_INT;
-    }
-
-    return 0;
 }
 
 int wifi67_dma_init(struct wifi67_priv *priv)
 {
-    int ret, i;
+    struct wifi67_dma *dma = &priv->dma;
+    int i, ret;
 
-    /* Allocate TX rings */
-    for (i = 0; i < WIFI67_MAX_TX_QUEUES; i++) {
-        ret = wifi67_dma_alloc_ring(priv, &priv->dma.tx_ring[i],
-                                   DMA_RING_SIZE);
+    /* Map DMA registers */
+    dma->regs = priv->mmio + 0x4000;  /* DMA register offset */
+
+    /* Initialize TX rings */
+    for (i = 0; i < WIFI67_NUM_TX_QUEUES; i++) {
+        ret = wifi67_dma_alloc_ring(priv, &dma->tx_ring[i],
+                                   WIFI67_DMA_TX_RING_SIZE);
         if (ret)
             goto err_free_tx;
     }
 
-    /* Allocate RX rings */
-    for (i = 0; i < WIFI67_MAX_RX_QUEUES; i++) {
-        ret = wifi67_dma_alloc_ring(priv, &priv->dma.rx_ring[i],
-                                   DMA_RING_SIZE);
+    /* Initialize RX rings */
+    for (i = 0; i < WIFI67_NUM_RX_QUEUES; i++) {
+        ret = wifi67_dma_alloc_ring(priv, &dma->rx_ring[i],
+                                   WIFI67_DMA_RX_RING_SIZE);
         if (ret)
             goto err_free_rx;
     }
 
-    /* Configure DMA engine */
-    dma_write32(priv, DMA_CTRL_CONFIG,
-                DMA_CTRL_ENABLE | DMA_CTRL_SG_EN);
-
-    /* Enable interrupts */
-    dma_write32(priv, DMA_INT_MASK,
-                DMA_INT_TX_DONE | DMA_INT_RX_DONE |
-                DMA_INT_TX_ERR | DMA_INT_RX_ERR |
-                DMA_INT_DESC_ERR);
-
     return 0;
 
 err_free_rx:
-    while (i--)
-        wifi67_dma_free_ring(priv, &priv->dma.rx_ring[i]);
-    i = WIFI67_MAX_TX_QUEUES;
+    for (i--; i >= 0; i--)
+        wifi67_dma_free_ring(priv, &dma->rx_ring[i]);
+    i = WIFI67_NUM_TX_QUEUES;
 err_free_tx:
-    while (i--)
-        wifi67_dma_free_ring(priv, &priv->dma.tx_ring[i]);
+    for (i--; i >= 0; i--)
+        wifi67_dma_free_ring(priv, &dma->tx_ring[i]);
     return ret;
 }
 
 void wifi67_dma_deinit(struct wifi67_priv *priv)
 {
+    struct wifi67_dma *dma = &priv->dma;
     int i;
 
-    /* Disable DMA and interrupts */
-    dma_write32(priv, DMA_CTRL_CONFIG, 0);
-    dma_write32(priv, DMA_INT_MASK, 0);
+    /* Free TX rings */
+    for (i = 0; i < WIFI67_NUM_TX_QUEUES; i++)
+        wifi67_dma_free_ring(priv, &dma->tx_ring[i]);
 
-    /* Free rings */
-    for (i = 0; i < WIFI67_MAX_TX_QUEUES; i++)
-        wifi67_dma_free_ring(priv, &priv->dma.tx_ring[i]);
-    for (i = 0; i < WIFI67_MAX_RX_QUEUES; i++)
-        wifi67_dma_free_ring(priv, &priv->dma.rx_ring[i]);
+    /* Free RX rings */
+    for (i = 0; i < WIFI67_NUM_RX_QUEUES; i++)
+        wifi67_dma_free_ring(priv, &dma->rx_ring[i]);
+
+    /* Disable DMA */
+    iowrite32(0, dma->regs + WIFI67_DMA_CTRL);
+}
+
+int wifi67_dma_start(struct wifi67_priv *priv)
+{
+    struct wifi67_dma *dma = &priv->dma;
+    u32 reg;
+    int i;
+
+    /* Set up base addresses for all rings */
+    for (i = 0; i < WIFI67_NUM_TX_QUEUES; i++) {
+        iowrite32(dma->tx_ring[i].desc_dma,
+                 dma->regs + WIFI67_DMA_TX_BASE + (i * 8));
+    }
+
+    for (i = 0; i < WIFI67_NUM_RX_QUEUES; i++) {
+        iowrite32(dma->rx_ring[i].desc_dma,
+                 dma->regs + WIFI67_DMA_RX_BASE + (i * 8));
+    }
+
+    /* Enable DMA engine */
+    reg = DMA_CTRL_ENABLE | DMA_CTRL_TX_EN | DMA_CTRL_RX_EN;
+    iowrite32(reg, dma->regs + WIFI67_DMA_CTRL);
+
+    return 0;
+}
+
+void wifi67_dma_stop(struct wifi67_priv *priv)
+{
+    struct wifi67_dma *dma = &priv->dma;
+
+    /* Disable DMA engine */
+    iowrite32(0, dma->regs + WIFI67_DMA_CTRL);
+
+    /* Wait for pending transactions to complete */
+    msleep(100);
+}
+
+static int wifi67_dma_map_skb(struct wifi67_priv *priv,
+                             struct sk_buff *skb,
+                             struct wifi67_dma_desc *desc)
+{
+    dma_addr_t dma_addr;
+
+    dma_addr = dma_map_single(&priv->pdev->dev, skb->data,
+                             skb->len, DMA_TO_DEVICE);
+    if (dma_mapping_error(&priv->pdev->dev, dma_addr))
+        return -ENOMEM;
+
+    desc->buf_addr = cpu_to_le32(dma_addr);
+    desc->buf_size = cpu_to_le16(skb->len);
+    desc->flags = cpu_to_le32(WIFI67_DMA_OWN | WIFI67_DMA_SOP |
+                             WIFI67_DMA_EOP | WIFI67_DMA_INT_EN);
+
+    return 0;
 }
 
 int wifi67_dma_tx(struct wifi67_priv *priv, struct sk_buff *skb, u8 queue)
 {
-    struct dma_ring *ring = &priv->dma.tx_ring[queue];
-    struct dma_desc *desc;
+    struct wifi67_dma *dma = &priv->dma;
+    struct wifi67_dma_ring *ring;
+    struct wifi67_dma_desc *desc;
+    unsigned long flags;
     int ret;
 
-    spin_lock_bh(&ring->lock);
+    if (queue >= WIFI67_NUM_TX_QUEUES)
+        return -EINVAL;
 
+    ring = &dma->tx_ring[queue];
+
+    spin_lock_irqsave(&ring->lock, flags);
+
+    /* Check if ring is full */
     if (((ring->tail + 1) % ring->size) == ring->head) {
-        spin_unlock_bh(&ring->lock);
-        return -ENOSPC;
+        spin_unlock_irqrestore(&ring->lock, flags);
+        return -EBUSY;
     }
 
     desc = &ring->desc[ring->tail];
-    ret = wifi67_dma_map_skb(priv, desc, skb, true, true);
+
+    /* Map SKB */
+    ret = wifi67_dma_map_skb(priv, skb, desc);
     if (ret) {
-        spin_unlock_bh(&ring->lock);
+        spin_unlock_irqrestore(&ring->lock, flags);
         return ret;
     }
 
-    ring->bufs[ring->tail] = skb;
+    /* Update tail pointer */
     ring->tail = (ring->tail + 1) % ring->size;
 
-    dma_write32(priv, DMA_TX_TAIL + (queue * 16), ring->tail);
+    /* Notify hardware */
+    iowrite32(ring->tail, dma->regs + WIFI67_DMA_TX_BASE + (queue * 8) + 4);
 
-    spin_unlock_bh(&ring->lock);
+    spin_unlock_irqrestore(&ring->lock, flags);
+
     return 0;
 }
 
-static void wifi67_dma_tx_cleanup_one(struct wifi67_priv *priv, struct dma_ring *ring)
+static void wifi67_dma_unmap_desc(struct wifi67_priv *priv,
+                                 struct wifi67_dma_desc *desc,
+                                 enum dma_data_direction dir)
 {
-    struct dma_desc *desc;
-    struct sk_buff *skb;
+    dma_addr_t dma_addr = le32_to_cpu(desc->buf_addr);
+    u16 buf_size = le16_to_cpu(desc->buf_size);
+
+    if (dma_addr)
+        dma_unmap_single(&priv->pdev->dev, dma_addr, buf_size, dir);
+}
+
+void wifi67_dma_tx_cleanup(struct wifi67_priv *priv, u8 queue)
+{
+    struct wifi67_dma *dma = &priv->dma;
+    struct wifi67_dma_ring *ring = &dma->tx_ring[queue];
+    struct wifi67_dma_desc *desc;
     unsigned long flags;
 
     spin_lock_irqsave(&ring->lock, flags);
@@ -177,72 +216,105 @@ static void wifi67_dma_tx_cleanup_one(struct wifi67_priv *priv, struct dma_ring 
     while (ring->head != ring->tail) {
         desc = &ring->desc[ring->head];
 
-        if (!(desc->ctrl & DESC_CTRL_OWN))
+        /* Check if hardware is done with this descriptor */
+        if (le32_to_cpu(desc->flags) & WIFI67_DMA_OWN)
             break;
 
-        skb = ring->bufs[ring->head];
+        /* Unmap DMA */
+        wifi67_dma_unmap_desc(priv, desc, DMA_TO_DEVICE);
+
+        /* Clear descriptor */
+        memset(desc, 0, sizeof(*desc));
+
+        /* Update head pointer */
+        ring->head = (ring->head + 1) % ring->size;
+        dma->tx_completed++;
+    }
+
+    spin_unlock_irqrestore(&ring->lock, flags);
+}
+
+void wifi67_dma_rx(struct wifi67_priv *priv, u8 queue)
+{
+    struct wifi67_dma *dma = &priv->dma;
+    struct wifi67_dma_ring *ring = &dma->rx_ring[queue];
+    struct wifi67_dma_desc *desc;
+    struct sk_buff *skb;
+    unsigned long flags;
+    dma_addr_t dma_addr;
+    u16 buf_size;
+
+    spin_lock_irqsave(&ring->lock, flags);
+
+    while (1) {
+        desc = &ring->desc[ring->head];
+
+        /* Check if hardware is done with this descriptor */
+        if (le32_to_cpu(desc->flags) & WIFI67_DMA_OWN)
+            break;
+
+        /* Get buffer details */
+        dma_addr = le32_to_cpu(desc->buf_addr);
+        buf_size = le16_to_cpu(desc->buf_size);
+
+        /* Unmap DMA */
+        dma_unmap_single(&priv->pdev->dev, dma_addr, buf_size, DMA_FROM_DEVICE);
+
+        /* Allocate SKB and copy data */
+        skb = dev_alloc_skb(buf_size);
         if (skb) {
-            dma_unmap_single(&priv->pdev->dev,
-                            le64_to_cpu(desc->buf_addr),
-                            skb->len, DMA_TO_DEVICE);
-            dev_kfree_skb_any(skb);
-            ring->bufs[ring->head] = NULL;
+            memcpy(skb_put(skb, buf_size), phys_to_virt(dma_addr), buf_size);
+            wifi67_mac_rx(priv, skb);
+            dma->rx_completed++;
+        } else {
+            dma->errors++;
         }
 
-        wifi67_dma_reset_desc(desc);
+        /* Clear descriptor */
+        memset(desc, 0, sizeof(*desc));
+
+        /* Update head pointer */
         ring->head = (ring->head + 1) % ring->size;
     }
 
     spin_unlock_irqrestore(&ring->lock, flags);
 }
 
-void wifi67_dma_tx_cleanup(struct wifi67_priv *priv, u8 queue)
+irqreturn_t wifi67_dma_isr(struct wifi67_priv *priv)
 {
-    wifi67_dma_tx_cleanup_one(priv, &priv->dma.tx_ring[queue]);
+    struct wifi67_dma *dma = &priv->dma;
+    u32 status;
+    int i;
+    bool handled = false;
+
+    /* Read DMA interrupt status */
+    status = ioread32(dma->regs + WIFI67_DMA_STATUS);
+    if (!status)
+        return IRQ_NONE;
+
+    /* Clear DMA interrupts */
+    iowrite32(status, dma->regs + WIFI67_DMA_STATUS);
+
+    /* Handle TX completions */
+    if (status & 0xFF) {
+        for (i = 0; i < WIFI67_NUM_TX_QUEUES; i++) {
+            if (status & BIT(i)) {
+                wifi67_dma_tx_cleanup(priv, i);
+                handled = true;
+            }
+        }
+    }
+
+    /* Handle RX */
+    if (status & 0xFF00) {
+        for (i = 0; i < WIFI67_NUM_RX_QUEUES; i++) {
+            if (status & BIT(i + 8)) {
+                wifi67_dma_rx(priv, i);
+                handled = true;
+            }
+        }
+    }
+
+    return handled ? IRQ_HANDLED : IRQ_NONE;
 }
 
-static int wifi67_dma_rx_fill_one(struct wifi67_priv *priv, struct dma_ring *ring)
-{
-    struct dma_desc *desc;
-    struct sk_buff *skb;
-    dma_addr_t mapping;
-    unsigned long flags;
-
-    spin_lock_irqsave(&ring->lock, flags);
-
-    if (((ring->tail + 1) % ring->size) == ring->head) {
-        spin_unlock_irqrestore(&ring->lock, flags);
-        return -ENOSPC;
-    }
-
-    desc = &ring->desc[ring->tail];
-
-    skb = dev_alloc_skb(DMA_MAX_BUFSZ);
-    if (!skb) {
-        spin_unlock_irqrestore(&ring->lock, flags);
-        return -ENOMEM;
-    }
-
-    mapping = dma_map_single(&priv->pdev->dev, skb->data,
-                            DMA_MAX_BUFSZ, DMA_FROM_DEVICE);
-    if (dma_mapping_error(&priv->pdev->dev, mapping)) {
-        dev_kfree_skb_any(skb);
-        spin_unlock_irqrestore(&ring->lock, flags);
-        return -ENOMEM;
-    }
-
-    desc->buf_addr = cpu_to_le64(mapping);
-    desc->len = cpu_to_le32(DMA_MAX_BUFSZ);
-    desc->ctrl = DESC_CTRL_OWN;
-
-    ring->bufs[ring->tail] = skb;
-    ring->tail = (ring->tail + 1) % ring->size;
-
-    spin_unlock_irqrestore(&ring->lock, flags);
-    return 0;
-}
-
-void wifi67_dma_rx_refill(struct wifi67_priv *priv, u8 queue)
-{
-    wifi67_dma_rx_fill_one(priv, &priv->dma.rx_ring[queue]);
-} 

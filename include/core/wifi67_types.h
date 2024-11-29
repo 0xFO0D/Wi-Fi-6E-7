@@ -13,6 +13,7 @@
 #include "../regulatory/reg_core.h"
 #include "../crypto/crypto_core.h"
 #include "../firmware/fw_core.h"
+#include "../hal/hardware.h"
 
 struct wifi67_priv {
     struct pci_dev *pdev;
@@ -27,6 +28,7 @@ struct wifi67_priv {
     struct wifi67_regulatory reg;
     struct wifi67_crypto crypto;
     struct wifi67_firmware fw;
+    struct wifi67_hw hal;
     
     /* Locks */
     spinlock_t lock;

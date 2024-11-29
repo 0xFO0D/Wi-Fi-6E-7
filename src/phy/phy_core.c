@@ -1,173 +1,141 @@
-#include <linux/delay.h>
-#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/pci.h>
+#include <net/mac80211.h>
+
 #include "../../include/phy/phy_core.h"
 #include "../../include/core/wifi67.h"
 
-/* Forward declaration of wifi67_priv structure */
-struct wifi67_priv;
+/* Register definitions */
+#define WIFI67_PHY_CTRL        0x0000
+#define WIFI67_PHY_STATUS      0x0004
+#define WIFI67_PHY_CONFIG      0x0008
+#define WIFI67_PHY_POWER      0x000C
 
-static inline u32 phy_read32(struct wifi67_priv *priv, u32 reg)
+/* Control register bits */
+#define PHY_CTRL_ENABLE       BIT(0)
+#define PHY_CTRL_RESET        BIT(1)
+#define PHY_CTRL_TX_EN        BIT(2)
+#define PHY_CTRL_RX_EN        BIT(3)
+#define PHY_CTRL_PS_EN        BIT(4)
+
+static void wifi67_phy_hw_init(struct wifi67_priv *priv)
 {
-    if (!priv || !priv->mmio)
-        return 0;
-    return readl(priv->mmio + reg);
-}
+    struct wifi67_phy *phy = &priv->phy;
+    u32 reg;
 
-static inline void phy_write32(struct wifi67_priv *priv, u32 reg, u32 val)
-{
-    if (!priv || !priv->mmio)
-        return;
-    writel(val, priv->mmio + reg);
-}
-
-static int wifi67_phy_wait_for_bit(struct wifi67_priv *priv, u32 reg,
-                                  u32 bit, bool set, int timeout)
-{
-    unsigned long end = jiffies + msecs_to_jiffies(timeout);
-    u32 val;
-
-    do {
-        val = phy_read32(priv, reg);
-        if (set) {
-            if (val & bit)
-                return 0;
-        } else {
-            if (!(val & bit))
-                return 0;
-        }
-        udelay(10);
-    } while (time_before(jiffies, end));
-
-    return -ETIMEDOUT;
-}
-
-int wifi67_phy_calibrate(struct wifi67_priv *priv)
-{
-    struct phy_calibration cal;
-    int ret, i;
-
-    /* Start calibration */
-    phy_write32(priv, PHY_CONTROL, PHY_CTRL_CALIB);
-
-    /* Wait for calibration to complete */
-    ret = wifi67_phy_wait_for_bit(priv, PHY_STATUS, PHY_STATUS_CAL, false, 1000);
-    if (ret)
-        return ret;
-
-    /* Read calibration data for each chain */
-    for (i = 0; i < 4; i++) {
-        cal.per_chain[i].tx_iq_cal = phy_read32(priv, PHY_CALIBRATION + 0x4 + (i * 0x20));
-        cal.per_chain[i].rx_iq_cal = phy_read32(priv, PHY_CALIBRATION + 0x8 + (i * 0x20));
-        cal.per_chain[i].tx_dc_offset = phy_read32(priv, PHY_CALIBRATION + 0xC + (i * 0x20));
-        cal.per_chain[i].rx_dc_offset = phy_read32(priv, PHY_CALIBRATION + 0x10 + (i * 0x20));
-        cal.per_chain[i].pll_cal = phy_read32(priv, PHY_CALIBRATION + 0x14 + (i * 0x20));
-        cal.per_chain[i].temp_comp = phy_read32(priv, PHY_CALIBRATION + 0x18 + (i * 0x20));
-    }
-
-    cal.last_cal_time = jiffies;
-    cal.cal_flags = PHY_CAL_VALID;
-
-    /* Store calibration data */
-    memcpy(&priv->phy.cal, &cal, sizeof(cal));
-
-    return 0;
+    /* Reset PHY */
+    iowrite32(PHY_CTRL_RESET, phy->regs + WIFI67_PHY_CTRL);
+    udelay(100);
+    
+    /* Clear reset and enable PHY */
+    reg = PHY_CTRL_ENABLE | PHY_CTRL_TX_EN | PHY_CTRL_RX_EN;
+    iowrite32(reg, phy->regs + WIFI67_PHY_CTRL);
+    
+    /* Set default configuration */
+    reg = WIFI67_PHY_CAP_BE | WIFI67_PHY_CAP_320MHZ | 
+          WIFI67_PHY_CAP_4K_QAM | WIFI67_PHY_CAP_MULTI_RU;
+    iowrite32(reg, phy->regs + WIFI67_PHY_CONFIG);
 }
 
 int wifi67_phy_init(struct wifi67_priv *priv)
 {
-    if (!priv)
-        return -EINVAL;
-
-    spin_lock_init(&priv->phy.lock);
-
-    /* Initialize PHY registers */
-    phy_write32(priv, PHY_CONTROL, PHY_CTRL_RESET);
-    msleep(10);
-    phy_write32(priv, PHY_CONTROL, 0);
-
-    /* Perform initial calibration */
-    return wifi67_phy_calibrate(priv);
+    struct wifi67_phy *phy = &priv->phy;
+    
+    /* Initialize locks */
+    spin_lock_init(&phy->lock);
+    
+    /* Map PHY registers */
+    phy->regs = priv->mmio + 0x2000;  /* PHY register offset */
+    
+    /* Set initial state */
+    phy->state = WIFI67_PHY_OFF;
+    phy->ps_enabled = false;
+    
+    /* Initialize hardware */
+    wifi67_phy_hw_init(priv);
+    
+    return 0;
 }
 
 void wifi67_phy_deinit(struct wifi67_priv *priv)
 {
-    if (!priv)
-        return;
-
-    /* Put PHY in reset state */
-    phy_write32(priv, PHY_CONTROL, PHY_CTRL_RESET);
+    struct wifi67_phy *phy = &priv->phy;
+    
+    /* Disable PHY */
+    iowrite32(0, phy->regs + WIFI67_PHY_CTRL);
+    
+    /* Reset statistics */
+    memset(&phy->stats, 0, sizeof(phy->stats));
 }
 
 int wifi67_phy_start(struct wifi67_priv *priv)
 {
-    u32 val;
-    int ret;
-
-    if (!priv)
-        return -EINVAL;
-
+    struct wifi67_phy *phy = &priv->phy;
+    u32 reg;
+    
+    spin_lock(&phy->lock);
+    
     /* Enable PHY */
-    val = PHY_CTRL_ENABLE | PHY_CTRL_TX | PHY_CTRL_RX;
-    phy_write32(priv, PHY_CONTROL, val);
-
-    /* Wait for PHY to be ready */
-    ret = wifi67_phy_wait_for_bit(priv, PHY_STATUS, PHY_STATUS_READY, true, 1000);
-    if (ret)
-        return ret;
-
+    reg = ioread32(phy->regs + WIFI67_PHY_CTRL);
+    reg |= PHY_CTRL_ENABLE | PHY_CTRL_TX_EN | PHY_CTRL_RX_EN;
+    iowrite32(reg, phy->regs + WIFI67_PHY_CTRL);
+    
+    phy->state = WIFI67_PHY_READY;
+    
+    spin_unlock(&phy->lock);
+    
     return 0;
 }
 
 void wifi67_phy_stop(struct wifi67_priv *priv)
 {
-    if (!priv)
-        return;
-
+    struct wifi67_phy *phy = &priv->phy;
+    
+    spin_lock(&phy->lock);
+    
     /* Disable PHY */
-    phy_write32(priv, PHY_CONTROL, 0);
+    iowrite32(0, phy->regs + WIFI67_PHY_CTRL);
+    phy->state = WIFI67_PHY_OFF;
+    
+    spin_unlock(&phy->lock);
 }
 
-int wifi67_phy_config_channel(struct wifi67_priv *priv, u32 freq, u32 bandwidth)
+int wifi67_phy_config(struct wifi67_priv *priv, struct ieee80211_conf *conf)
 {
-    if (!priv)
-        return -EINVAL;
-
-    spin_lock(&priv->phy.lock);
-    priv->phy.current_channel = freq;
-    priv->phy.current_bandwidth = bandwidth;
-    spin_unlock(&priv->phy.lock);
-
-    /* Configure PHY for new channel */
-    phy_write32(priv, PHY_CHANNEL, freq);
+    struct wifi67_phy *phy = &priv->phy;
+    u32 reg;
+    
+    spin_lock(&phy->lock);
+    
+    /* Update PHY configuration */
+    reg = ioread32(phy->regs + WIFI67_PHY_CONFIG);
+    
+    if (conf->chandef.width >= NL80211_CHAN_WIDTH_320)
+        reg |= WIFI67_PHY_CAP_320MHZ;
+    
+    iowrite32(reg, phy->regs + WIFI67_PHY_CONFIG);
+    
+    spin_unlock(&phy->lock);
     
     return 0;
 }
 
-int wifi67_phy_set_txpower(struct wifi67_priv *priv, int dbm)
+void wifi67_phy_set_power(struct wifi67_priv *priv, bool enable)
 {
-    if (!priv)
-        return -EINVAL;
-
-    if (dbm < 0 || dbm > 30)
-        return -EINVAL;
-
-    spin_lock(&priv->phy.lock);
-    priv->phy.current_txpower = dbm;
-    spin_unlock(&priv->phy.lock);
-
-    /* Set TX power */
-    phy_write32(priv, PHY_TXPOWER, dbm);
-
-    return 0;
-}
-
-int wifi67_phy_get_rssi(struct wifi67_priv *priv)
-{
-    u32 val;
-
-    if (!priv)
-        return -EINVAL;
-
-    val = phy_read32(priv, PHY_AGC);
-    return -(val & 0xFF); /* Convert to negative dBm */
+    struct wifi67_phy *phy = &priv->phy;
+    u32 reg;
+    
+    spin_lock(&phy->lock);
+    
+    reg = ioread32(phy->regs + WIFI67_PHY_CTRL);
+    
+    if (enable)
+        reg &= ~PHY_CTRL_PS_EN;
+    else
+        reg |= PHY_CTRL_PS_EN;
+    
+    iowrite32(reg, phy->regs + WIFI67_PHY_CTRL);
+    phy->ps_enabled = !enable;
+    
+    spin_unlock(&phy->lock);
 } 

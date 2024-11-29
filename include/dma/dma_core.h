@@ -3,76 +3,58 @@
 
 #include <linux/types.h>
 #include <linux/dma-mapping.h>
-#include <linux/skbuff.h>
 #include "../core/wifi67_forward.h"
+#include "../mac/mac_core.h"
 
-/* DMA Register definitions */
-#define DMA_REG_BASE         0x2000
-#define DMA_CTRL_CONFIG     (DMA_REG_BASE + 0x00)
-#define DMA_INT_MASK        (DMA_REG_BASE + 0x04)
-#define DMA_TX_BASE         (DMA_REG_BASE + 0x10)
-#define DMA_TX_HEAD         (DMA_REG_BASE + 0x14)
-#define DMA_TX_TAIL         (DMA_REG_BASE + 0x18)
-#define DMA_RX_BASE         (DMA_REG_BASE + 0x20)
-#define DMA_RX_HEAD         (DMA_REG_BASE + 0x24)
-#define DMA_RX_TAIL         (DMA_REG_BASE + 0x28)
+/* DMA descriptor flags */
+#define WIFI67_DMA_OWN        BIT(31)
+#define WIFI67_DMA_SOP        BIT(30)
+#define WIFI67_DMA_EOP        BIT(29)
+#define WIFI67_DMA_INT_EN     BIT(28)
 
-/* DMA Control bits */
-#define DMA_CTRL_ENABLE     BIT(0)
-#define DMA_CTRL_SG_EN      BIT(1)
-#define DMA_CTRL_RESET      BIT(31)
+/* DMA ring sizes */
+#define WIFI67_DMA_TX_RING_SIZE   256
+#define WIFI67_DMA_RX_RING_SIZE   256
 
-/* DMA Interrupt bits */
-#define DMA_INT_TX_DONE     BIT(0)
-#define DMA_INT_RX_DONE     BIT(1)
-#define DMA_INT_TX_ERR      BIT(2)
-#define DMA_INT_RX_ERR      BIT(3)
-#define DMA_INT_DESC_ERR    BIT(4)
+/* DMA descriptor structure */
+struct wifi67_dma_desc {
+    __le32 flags;
+    __le32 buf_addr;
+    __le16 buf_size;
+    __le16 next_desc;
+} __packed __aligned(4);
 
-/* Constants */
-#define DMA_MAX_SEGS        4
-#define DMA_RING_SIZE       256
-#define DMA_MAX_BUFSZ       2048
-
-/* Descriptor Control bits */
-#define DESC_CTRL_OWN       BIT(31)
-#define DESC_CTRL_SOF       BIT(29)
-#define DESC_CTRL_EOF       BIT(28)
-#define DESC_CTRL_INT       BIT(27)
-
-struct dma_desc {
-    __le32 ctrl;
-    __le32 len;
-    __le64 buf_addr;
-    __le64 next_desc;
-    struct sk_buff *skb;
-    dma_addr_t dma_addr;
-};
-
-struct dma_ring {
-    struct dma_desc *desc;
-    struct sk_buff **bufs;
-    dma_addr_t dma_addr;
-    u32 size;
-    u32 count;
-    u32 head;
-    u32 tail;
+/* DMA ring structure */
+struct wifi67_dma_ring {
+    struct wifi67_dma_desc *desc;
+    dma_addr_t desc_dma;
+    u16 head;
+    u16 tail;
+    u16 size;
     spinlock_t lock;
 };
 
+/* Main DMA structure */
 struct wifi67_dma {
-    struct dma_ring tx_ring[4];
-    struct dma_ring rx_ring[4];
+    struct wifi67_dma_ring tx_ring[WIFI67_NUM_TX_QUEUES];
+    struct wifi67_dma_ring rx_ring[WIFI67_NUM_RX_QUEUES];
+    
+    /* Hardware registers */
+    void __iomem *regs;
+    
+    /* Statistics */
+    u32 tx_completed;
+    u32 rx_completed;
+    u32 errors;
 };
 
-/* Function declarations - remove static keywords from implementation */
-int wifi67_dma_alloc_ring(struct wifi67_priv *priv, struct dma_ring *ring, u32 count);
-void wifi67_dma_free_ring(struct wifi67_priv *priv, struct dma_ring *ring);
-void wifi67_dma_reset_desc(struct dma_desc *desc);
+/* Function declarations */
 int wifi67_dma_init(struct wifi67_priv *priv);
 void wifi67_dma_deinit(struct wifi67_priv *priv);
+int wifi67_dma_start(struct wifi67_priv *priv);
+void wifi67_dma_stop(struct wifi67_priv *priv);
 int wifi67_dma_tx(struct wifi67_priv *priv, struct sk_buff *skb, u8 queue);
-void wifi67_dma_tx_cleanup(struct wifi67_priv *priv, u8 queue);
-void wifi67_dma_rx_refill(struct wifi67_priv *priv, u8 queue);
+void wifi67_dma_rx(struct wifi67_priv *priv, u8 queue);
+irqreturn_t wifi67_dma_isr(struct wifi67_priv *priv);
 
 #endif /* _WIFI67_DMA_CORE_H_ */ 
