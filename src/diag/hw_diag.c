@@ -84,6 +84,34 @@ void wifi67_hw_diag_stop(struct wifi67_priv *priv)
     diag->state = WIFI67_DIAG_STATE_IDLE;
 }
 
+void wifi67_hw_diag_thermal(struct wifi67_priv *priv)
+{
+    struct wifi67_hw_diag *diag = &priv->hw_diag;
+    struct wifi67_thermal_stats stats;
+    u32 temp;
+    
+    /* Read current temperature */
+    temp = readl(priv->mmio + WIFI67_REG_TEMPERATURE);
+    stats.current_temp = temp;
+    
+    /* Check thermal thresholds */
+    if (temp >= WIFI67_THERMAL_CRITICAL) {
+        wifi67_err(priv, "Critical temperature reached: %d°C\n", temp);
+        wifi67_hw_emergency_shutdown(priv);
+    } else if (temp >= WIFI67_THERMAL_THROTTLE) {
+        wifi67_warn(priv, "High temperature - throttling: %d°C\n", temp);
+        wifi67_power_set_frequency(priv, WIFI67_DVFS_MIN_FREQ);
+        stats.throttle_events++;
+    }
+    
+    /* Update thermal statistics */
+    stats.max_temp = max(diag->thermal.max_temp, temp);
+    stats.throttle_count = diag->thermal.throttle_events;
+    
+    /* Report thermal stats */
+    wifi67_debug_thermal(priv, &stats);
+}
+
 EXPORT_SYMBOL_GPL(wifi67_hw_diag_init);
 EXPORT_SYMBOL_GPL(wifi67_hw_diag_deinit);
 EXPORT_SYMBOL_GPL(wifi67_hw_diag_start);

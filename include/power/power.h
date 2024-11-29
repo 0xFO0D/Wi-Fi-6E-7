@@ -61,6 +61,25 @@ struct wifi67_power_mgmt {
     ktime_t last_state_change;
 };
 
+/* Thermal thresholds */
+#define WIFI67_THERMAL_WARNING   75
+#define WIFI67_THERMAL_THROTTLE  85
+#define WIFI67_THERMAL_CRITICAL  95
+
+struct wifi67_dvfs_state {
+    u32 current_freq;
+    u32 current_voltage;
+    u32 temperature;
+    atomic_t active_clients;
+};
+
+struct wifi67_thermal_stats {
+    u32 current_temp;
+    u32 max_temp;
+    u32 throttle_events;
+    u32 emergency_shutdowns;
+};
+
 int wifi67_power_init(struct wifi67_priv *priv);
 void wifi67_power_deinit(struct wifi67_priv *priv);
 int wifi67_power_configure(struct wifi67_priv *priv, struct wifi67_power_config *config);
@@ -68,5 +87,8 @@ int wifi67_power_set_mode(struct wifi67_priv *priv, enum wifi67_power_mode mode)
 int wifi67_power_sleep(struct wifi67_priv *priv);
 int wifi67_power_wake(struct wifi67_priv *priv);
 void wifi67_power_get_stats(struct wifi67_priv *priv, struct wifi67_power_stats *stats);
+int wifi67_power_dvfs_init(struct wifi67_priv *priv);
+int wifi67_power_set_frequency(struct wifi67_priv *priv, u32 freq);
+void wifi67_hw_diag_thermal(struct wifi67_priv *priv);
 
 #endif /* _WIFI67_POWER_H_ */ 

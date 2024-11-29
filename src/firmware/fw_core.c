@@ -175,8 +175,60 @@ void wifi67_fw_stop(struct wifi67_priv *priv)
     fw->running = false;
 }
 
+int wifi67_fw_update(struct wifi67_priv *priv, const struct firmware *new_fw)
+{
+    struct wifi67_firmware *fw = &priv->fw;
+    int ret;
+    
+    if (!new_fw || !new_fw->data)
+        return -EINVAL;
+        
+    /* Verify firmware header and checksum */
+    ret = wifi67_fw_verify_header(new_fw);
+    if (ret) {
+        wifi67_err(priv, "Invalid firmware header\n");
+        return ret;
+    }
+    
+    /* Create backup of current firmware */
+    ret = wifi67_fw_backup(priv);
+    if (ret) {
+        wifi67_err(priv, "Failed to backup firmware\n");
+        return ret;
+    }
+    
+    /* Stop firmware execution */
+    wifi67_fw_stop(priv);
+    
+    /* Program new firmware */
+    ret = wifi67_fw_program(priv, new_fw);
+    if (ret) {
+        wifi67_err(priv, "Failed to program firmware\n");
+        wifi67_fw_restore(priv);
+        return ret;
+    }
+    
+    /* Update firmware version info */
+    fw->version = ((struct wifi67_fw_header *)new_fw->data)->version;
+    fw->api_version = ((struct wifi67_fw_header *)new_fw->data)->api_version;
+    
+    /* Restart firmware */
+    ret = wifi67_fw_start(priv);
+    if (ret) {
+        wifi67_err(priv, "Failed to start new firmware\n");
+        wifi67_fw_restore(priv);
+        return ret;
+    }
+    
+    wifi67_info(priv, "Firmware updated successfully to v%u.%u\n",
+                fw->version >> 16, fw->version & 0xFFFF);
+    
+    return 0;
+}
+
 EXPORT_SYMBOL_GPL(wifi67_fw_load);
 EXPORT_SYMBOL_GPL(wifi67_fw_unload);
 EXPORT_SYMBOL_GPL(wifi67_fw_verify);
 EXPORT_SYMBOL_GPL(wifi67_fw_start);
-EXPORT_SYMBOL_GPL(wifi67_fw_stop); 
+EXPORT_SYMBOL_GPL(wifi67_fw_stop);
+EXPORT_SYMBOL_GPL(wifi67_fw_update); 

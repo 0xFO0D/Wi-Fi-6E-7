@@ -198,10 +198,51 @@ void wifi67_power_get_stats(struct wifi67_priv *priv, struct wifi67_power_stats 
     spin_unlock_irqrestore(&power->lock, flags);
 }
 
+/* DVFS definitions */
+#define WIFI67_DVFS_MIN_FREQ     400000
+#define WIFI67_DVFS_MAX_FREQ     2400000
+#define WIFI67_DVFS_BASE_FREQ    800000
+#define WIFI67_DVFS_BASE_VOLTAGE 850000
+
+int wifi67_power_dvfs_init(struct wifi67_priv *priv)
+{
+    struct wifi67_power_mgmt *power = &priv->power;
+    
+    power->dvfs.current_freq = WIFI67_DVFS_BASE_FREQ;
+    power->dvfs.current_voltage = WIFI67_DVFS_BASE_VOLTAGE;
+    power->dvfs.temperature = 0;
+    atomic_set(&power->dvfs.active_clients, 0);
+    
+    return 0;
+}
+
+int wifi67_power_set_frequency(struct wifi67_priv *priv, u32 freq)
+{
+    struct wifi67_power_mgmt *power = &priv->power;
+    unsigned long flags;
+    int ret = 0;
+    
+    if (freq < WIFI67_DVFS_MIN_FREQ || freq > WIFI67_DVFS_MAX_FREQ)
+        return -EINVAL;
+        
+    spin_lock_irqsave(&power->lock, flags);
+    
+    /* Update hardware frequency */
+    ret = wifi67_hw_set_frequency(priv, freq);
+    if (!ret)
+        power->dvfs.current_freq = freq;
+    
+    spin_unlock_irqrestore(&power->lock, flags);
+    
+    return ret;
+}
+
 EXPORT_SYMBOL_GPL(wifi67_power_init);
 EXPORT_SYMBOL_GPL(wifi67_power_deinit);
 EXPORT_SYMBOL_GPL(wifi67_power_configure);
 EXPORT_SYMBOL_GPL(wifi67_power_set_mode);
 EXPORT_SYMBOL_GPL(wifi67_power_sleep);
 EXPORT_SYMBOL_GPL(wifi67_power_wake);
-EXPORT_SYMBOL_GPL(wifi67_power_get_stats); 
+EXPORT_SYMBOL_GPL(wifi67_power_get_stats);
+EXPORT_SYMBOL_GPL(wifi67_power_dvfs_init);
+EXPORT_SYMBOL_GPL(wifi67_power_set_frequency); 
