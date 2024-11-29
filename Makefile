@@ -3,6 +3,7 @@ obj-m += wifi67.o
 wifi67-objs := \
     src/core/main.o \
     src/core/bands.o \
+    src/core/caps.o \
     src/hal/hardware.o \
     src/mac/mac_core.o \
     src/phy/phy_core.o \
@@ -12,34 +13,26 @@ wifi67-objs := \
     src/firmware/fw_core.o \
     src/debug/debug.o \
     src/perf/perf_monitor.o \
-    src/diag/hw_diag.o
+    src/diag/hw_diag.o \
+    src/power/power_mgmt.o
 
-# Add CFLAGS for debugging and optimization
-ccflags-y := -Wall -Wextra -g -O2
-# Include path for our header files
-ccflags-y += -I$(src)/include
+# Test module
+obj-m += wifi67_test.o
+wifi67_test-objs := tests/band_test.o
 
-# Path to kernel build directory
+# Kernel build directory
 KDIR ?= /lib/modules/$(shell uname -r)/build
 
-# Targets
+# Build flags
+EXTRA_CFLAGS := -I$(PWD)/include -DDEBUG
+
 all:
-	$(MAKE) -C $(KDIR) M=$(PWD) modules
+	make -C $(KDIR) M=$(PWD) modules
 
 clean:
-	$(MAKE) -C $(KDIR) M=$(PWD) clean
+	make -C $(KDIR) M=$(PWD) clean
 
-# Install target
-install:
-	$(MAKE) -C $(KDIR) M=$(PWD) modules_install
-	depmod -a
+test: all
+	sudo ./tests/test_driver.sh
 
-# Debug target with additional debug flags
-debug: ccflags-y += -DDEBUG -DVERBOSE_DEBUG
-debug: all
-
-# Check coding style
-checkstyle:
-	$(KDIR)/scripts/checkpatch.pl -f --no-tree src/*/*.c include/*/*.h
-
-.PHONY: all clean install debug checkstyle
+.PHONY: all clean test

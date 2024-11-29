@@ -4,6 +4,8 @@
 #include <net/cfg80211.h>
 #include "../../include/core/wifi67.h"
 #include "../../include/core/bands.h"
+#include "../../include/core/caps.h"
+#include "../../include/core/ops.h"
 
 static void wifi67_setup_bands(struct wifi67_priv *priv)
 {
