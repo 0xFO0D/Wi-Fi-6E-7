@@ -1,0 +1,42 @@
+# Build artifacts
+*.o
+*.ko
+*.mod
+*.mod.c
+*.mod.o
+*.cmd
+.tmp_versions/
+Module.symvers
+modules.order
+Module.markers
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Debug files
+*.debug
+core.*
+
+# Firmware binaries
+firmware/*.bin
+firmware/*.fw
+
+# Test artifacts
+tests/*.log
+tests/results/
+
+# Dependencies
+*.dep
+
+# Backup files
+*.bak
+*.backup
+*.old
+
+# System files
+.DS_Store
+Thumbs.db

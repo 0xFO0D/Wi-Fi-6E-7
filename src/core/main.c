@@ -1,6 +1,13 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/netdevice.h>
+#include <linux/etherdevice.h>
+#include <linux/interrupt.h>
+#include <linux/delay.h>
+#include <linux/bitops.h>
+#include <linux/debugfs.h>
+#include <net/mac80211.h>
+#include "../../include/core/wifi67.h"
 
 #define WIFI67_VENDOR_ID 0x0000  /* Replace with actual vendor ID */
 #define WIFI67_DEVICE_ID 0x0000  /* Replace with actual device ID */
@@ -15,29 +22,6 @@ static const struct pci_device_id wifi67_pci_ids[] = {
     { 0 }
 };
 MODULE_DEVICE_TABLE(pci, wifi67_pci_ids);
-
-struct wifi67_priv {
-    struct pci_dev *pdev;
-    struct ieee80211_hw *hw;
-    void __iomem *mmio;
-    
-    spinlock_t tx_lock ____cacheline_aligned;
-    u32 tx_ring_ptr;
-    
-    DECLARE_BITMAP(tx_bitmap, 256);
-    
-    struct {
-        dma_addr_t phys;
-        void *virt;
-        size_t size;
-    } dma_region[4];
-
-    struct {
-        struct phy_stats stats;
-        struct phy_calibration cal;
-        spinlock_t lock;
-    } phy;
-};
 
 static int __init wifi67_init(void)
 {

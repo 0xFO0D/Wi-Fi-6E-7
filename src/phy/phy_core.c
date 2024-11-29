@@ -1,162 +1,173 @@
 #include <linux/delay.h>
-#include <linux/bitfield.h>
-#include "../../include/phy/phy_regs.h"
+#include <linux/kernel.h>
 #include "../../include/phy/phy_core.h"
+#include "../../include/core/wifi67.h"
 
-#define PHY_CALIBRATION_RETRY_MAX 3
-#define PHY_PLL_LOCK_TIMEOUT_MS   50
+/* Forward declaration of wifi67_priv structure */
+struct wifi67_priv;
 
 static inline u32 phy_read32(struct wifi67_priv *priv, u32 reg)
 {
+    if (!priv || !priv->mmio)
+        return 0;
     return readl(priv->mmio + reg);
 }
 
 static inline void phy_write32(struct wifi67_priv *priv, u32 reg, u32 val)
 {
+    if (!priv || !priv->mmio)
+        return;
     writel(val, priv->mmio + reg);
 }
 
-static int wifi67_phy_calibrate(struct wifi67_priv *priv)
+static int wifi67_phy_wait_for_bit(struct wifi67_priv *priv, u32 reg,
+                                  u32 bit, bool set, int timeout)
 {
-    struct phy_calibration cal;
-    u32 val, retry = 0;
-    int ret = 0;
-
-    /* Start calibration sequence */
-    val = phy_read32(priv, PHY_CALIBRATION);
-    val |= BIT(0);  /* Trigger calibration */
-    phy_write32(priv, PHY_CALIBRATION, val);
-
-    do {
-        msleep(10);
-        val = phy_read32(priv, PHY_CALIBRATION);
-        if (!(val & BIT(0)))
-            break;
-        
-        if (++retry >= PHY_CALIBRATION_RETRY_MAX) {
-            ret = -ETIMEDOUT;
-            goto out;
-        }
-    } while (1);
-
-    /* Store calibration results */
-    cal.tx_iq_cal = phy_read32(priv, PHY_CALIBRATION + 0x4);
-    cal.rx_iq_cal = phy_read32(priv, PHY_CALIBRATION + 0x8);
-    cal.tx_dc_offset = phy_read32(priv, PHY_CALIBRATION + 0xC);
-    cal.rx_dc_offset = phy_read32(priv, PHY_CALIBRATION + 0x10);
-    cal.pll_cal = phy_read32(priv, PHY_CALIBRATION + 0x14);
-    cal.temp_comp = phy_read32(priv, PHY_CALIBRATION + 0x18);
-
-    memcpy(&priv->phy.cal, &cal, sizeof(cal));
-
-out:
-    return ret;
-}
-
-static int wifi67_phy_configure_pll(struct wifi67_priv *priv, u32 freq)
-{
+    unsigned long end = jiffies + msecs_to_jiffies(timeout);
     u32 val;
-    int timeout = PHY_PLL_LOCK_TIMEOUT_MS;
 
-    /* Program PLL frequency */
-    val = FIELD_PREP(PLL_FREQ_MASK, freq);
-    phy_write32(priv, PHY_PLL_CTRL, val);
-
-    /* Wait for PLL lock */
     do {
-        msleep(1);
-        val = phy_read32(priv, PHY_PLL_CTRL);
-        if (val & PLL_LOCK_BIT)
-            return 0;
-    } while (--timeout > 0);
+        val = phy_read32(priv, reg);
+        if (set) {
+            if (val & bit)
+                return 0;
+        } else {
+            if (!(val & bit))
+                return 0;
+        }
+        udelay(10);
+    } while (time_before(jiffies, end));
 
     return -ETIMEDOUT;
 }
 
-int wifi67_phy_init(struct wifi67_priv *priv)
+int wifi67_phy_calibrate(struct wifi67_priv *priv)
 {
-    u32 val;
-    int ret;
+    struct phy_calibration cal;
+    int ret, i;
 
-    /* Reset PHY */
-    val = PHY_CFG_RESET;
-    phy_write32(priv, PHY_CTRL_CONFIG, val);
-    msleep(1);
-    
-    /* Configure PHY features */
-    val = PHY_CFG_ENABLE | PHY_CFG_320MHZ | PHY_CFG_4K_QAM | PHY_CFG_MLO;
-    phy_write32(priv, PHY_CTRL_CONFIG, val);
+    /* Start calibration */
+    phy_write32(priv, PHY_CONTROL, PHY_CTRL_CALIB);
 
-    /* Initialize AGC */
-    val = FIELD_PREP(AGC_GAIN_MASK, 0x40) |
-          FIELD_PREP(AGC_THRESHOLD_MASK, 0x80);
-    phy_write32(priv, PHY_AGC_CTRL, val);
-
-    /* Configure initial RF parameters */
-    ret = wifi67_phy_configure_pll(priv, 5180); /* Start at 5.18GHz */
+    /* Wait for calibration to complete */
+    ret = wifi67_phy_wait_for_bit(priv, PHY_STATUS, PHY_STATUS_CAL, false, 1000);
     if (ret)
-        goto err;
+        return ret;
 
-    /* Perform initial calibration */
-    ret = wifi67_phy_calibrate(priv);
-    if (ret)
-        goto err;
+    /* Read calibration data for each chain */
+    for (i = 0; i < 4; i++) {
+        cal.per_chain[i].tx_iq_cal = phy_read32(priv, PHY_CALIBRATION + 0x4 + (i * 0x20));
+        cal.per_chain[i].rx_iq_cal = phy_read32(priv, PHY_CALIBRATION + 0x8 + (i * 0x20));
+        cal.per_chain[i].tx_dc_offset = phy_read32(priv, PHY_CALIBRATION + 0xC + (i * 0x20));
+        cal.per_chain[i].rx_dc_offset = phy_read32(priv, PHY_CALIBRATION + 0x10 + (i * 0x20));
+        cal.per_chain[i].pll_cal = phy_read32(priv, PHY_CALIBRATION + 0x14 + (i * 0x20));
+        cal.per_chain[i].temp_comp = phy_read32(priv, PHY_CALIBRATION + 0x18 + (i * 0x20));
+    }
+
+    cal.last_cal_time = jiffies;
+    cal.cal_flags = PHY_CAL_VALID;
+
+    /* Store calibration data */
+    memcpy(&priv->phy.cal, &cal, sizeof(cal));
 
     return 0;
+}
 
-err:
-    val = PHY_CFG_RESET;
-    phy_write32(priv, PHY_CTRL_CONFIG, val);
-    return ret;
+int wifi67_phy_init(struct wifi67_priv *priv)
+{
+    if (!priv)
+        return -EINVAL;
+
+    spin_lock_init(&priv->phy.lock);
+
+    /* Initialize PHY registers */
+    phy_write32(priv, PHY_CONTROL, PHY_CTRL_RESET);
+    msleep(10);
+    phy_write32(priv, PHY_CONTROL, 0);
+
+    /* Perform initial calibration */
+    return wifi67_phy_calibrate(priv);
 }
 
 void wifi67_phy_deinit(struct wifi67_priv *priv)
 {
-    u32 val = PHY_CFG_RESET;
-    phy_write32(priv, PHY_CTRL_CONFIG, val);
+    if (!priv)
+        return;
+
+    /* Put PHY in reset state */
+    phy_write32(priv, PHY_CONTROL, PHY_CTRL_RESET);
 }
 
 int wifi67_phy_start(struct wifi67_priv *priv)
 {
-    u32 val = phy_read32(priv, PHY_CTRL_CONFIG);
-    val |= PHY_CFG_ENABLE;
-    phy_write32(priv, PHY_CTRL_CONFIG, val);
+    u32 val;
+    int ret;
+
+    if (!priv)
+        return -EINVAL;
+
+    /* Enable PHY */
+    val = PHY_CTRL_ENABLE | PHY_CTRL_TX | PHY_CTRL_RX;
+    phy_write32(priv, PHY_CONTROL, val);
+
+    /* Wait for PHY to be ready */
+    ret = wifi67_phy_wait_for_bit(priv, PHY_STATUS, PHY_STATUS_READY, true, 1000);
+    if (ret)
+        return ret;
+
     return 0;
 }
 
 void wifi67_phy_stop(struct wifi67_priv *priv)
 {
-    u32 val = phy_read32(priv, PHY_CTRL_CONFIG);
-    val &= ~PHY_CFG_ENABLE;
-    phy_write32(priv, PHY_CTRL_CONFIG, val);
+    if (!priv)
+        return;
+
+    /* Disable PHY */
+    phy_write32(priv, PHY_CONTROL, 0);
 }
 
 int wifi67_phy_config_channel(struct wifi67_priv *priv, u32 freq, u32 bandwidth)
 {
-    int ret;
+    if (!priv)
+        return -EINVAL;
 
-    /* Configure PLL for new frequency */
-    ret = wifi67_phy_configure_pll(priv, freq);
-    if (ret)
-        return ret;
+    spin_lock(&priv->phy.lock);
+    priv->phy.current_channel = freq;
+    priv->phy.current_bandwidth = bandwidth;
+    spin_unlock(&priv->phy.lock);
 
-    /* Recalibrate for new frequency */
-    return wifi67_phy_calibrate(priv);
+    /* Configure PHY for new channel */
+    phy_write32(priv, PHY_CHANNEL, freq);
+    
+    return 0;
 }
 
 int wifi67_phy_set_txpower(struct wifi67_priv *priv, int dbm)
 {
-    u32 val;
-    
-    /* Convert dBm to hardware gain value */
-    val = min_t(int, dbm * 2, 0xFF);
-    phy_write32(priv, PHY_TX_GAIN_CTRL, val);
-    
+    if (!priv)
+        return -EINVAL;
+
+    if (dbm < 0 || dbm > 30)
+        return -EINVAL;
+
+    spin_lock(&priv->phy.lock);
+    priv->phy.current_txpower = dbm;
+    spin_unlock(&priv->phy.lock);
+
+    /* Set TX power */
+    phy_write32(priv, PHY_TXPOWER, dbm);
+
     return 0;
 }
 
 int wifi67_phy_get_rssi(struct wifi67_priv *priv)
 {
-    u32 val = phy_read32(priv, PHY_RX_GAIN_CTRL);
+    u32 val;
+
+    if (!priv)
+        return -EINVAL;
+
+    val = phy_read32(priv, PHY_AGC);
     return -(val & 0xFF); /* Convert to negative dBm */
 } 

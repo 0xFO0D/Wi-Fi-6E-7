@@ -1,47 +1,31 @@
 #include <linux/module.h>
-#include <linux/slab.h>
-#include <linux/err.h>
+#include <linux/crypto.h>
+#include <crypto/aead.h>
+#include <crypto/aes.h>
 #include <linux/scatterlist.h>
+
 #include "../../include/crypto/crypto_core.h"
+#include "../../include/core/wifi67.h"
 
 static int wifi67_crypto_alloc_tfm(struct wifi67_crypto_key *key)
 {
-    switch (key->alg) {
-    case CRYPTO_ALG_AES:
-        key->tfm = crypto_alloc_skcipher("cbc(aes)", 0, 0);
-        if (IS_ERR(key->tfm))
-            return PTR_ERR(key->tfm);
-        break;
-    case CRYPTO_ALG_GCMP:
-        key->aead = crypto_alloc_aead("gcm(aes)", 0, 0);
-        if (IS_ERR(key->aead))
-            return PTR_ERR(key->aead);
-        break;
-    case CRYPTO_ALG_CCMP:
-        key->aead = crypto_alloc_aead("ccm(aes)", 0, 0);
-        if (IS_ERR(key->aead))
-            return PTR_ERR(key->aead);
-        break;
-    default:
-        return -EINVAL;
-    }
+    key->aead = crypto_alloc_aead("gcm(aes)", 0, CRYPTO_ALG_ASYNC);
+    if (IS_ERR(key->aead))
+        return PTR_ERR(key->aead);
+
     return 0;
 }
 
 int wifi67_crypto_init(struct wifi67_priv *priv)
 {
-    struct wifi67_crypto *crypto;
+    struct wifi67_crypto *crypto = &priv->crypto;
     int i;
 
-    crypto = kzalloc(sizeof(*crypto), GFP_KERNEL);
-    if (!crypto)
-        return -ENOMEM;
-
-    priv->crypto = crypto;
     spin_lock_init(&crypto->lock);
 
     for (i = 0; i < WIFI67_MAX_KEY_ENTRIES; i++) {
-        crypto->keys[i].alg = CRYPTO_ALG_NONE;
+        crypto->keys[i].valid = false;
+        crypto->keys[i].aead = NULL;
     }
 
     return 0;
@@ -49,117 +33,106 @@ int wifi67_crypto_init(struct wifi67_priv *priv)
 
 void wifi67_crypto_deinit(struct wifi67_priv *priv)
 {
-    struct wifi67_crypto *crypto = priv->crypto;
+    struct wifi67_crypto *crypto = &priv->crypto;
     int i;
 
-    if (!crypto)
-        return;
-
     for (i = 0; i < WIFI67_MAX_KEY_ENTRIES; i++) {
-        if (crypto->keys[i].tfm)
-            crypto_free_skcipher(crypto->keys[i].tfm);
-        if (crypto->keys[i].aead)
+        if (crypto->keys[i].valid) {
             crypto_free_aead(crypto->keys[i].aead);
+            crypto->keys[i].valid = false;
+        }
     }
-
-    kfree(crypto);
-    priv->crypto = NULL;
 }
 
-int wifi67_crypto_set_key(struct wifi67_priv *priv, u8 idx, const u8 *key,
-                          u32 key_len, enum crypto_alg alg)
+int wifi67_crypto_set_key(struct wifi67_priv *priv, u8 key_idx,
+                         const u8 *key, u32 key_len)
 {
-    struct wifi67_crypto *crypto = priv->crypto;
+    struct wifi67_crypto *crypto = &priv->crypto;
     struct wifi67_crypto_key *crypto_key;
     int ret;
 
-    if (idx >= WIFI67_MAX_KEY_ENTRIES)
+    if (key_idx >= WIFI67_MAX_KEY_ENTRIES)
         return -EINVAL;
 
-    spin_lock(&crypto->lock);
+    crypto_key = &crypto->keys[key_idx];
 
-    crypto_key = &crypto->keys[idx];
-    memcpy(crypto_key->key, key, key_len);
-    crypto_key->key_len = key_len;
-    crypto_key->alg = alg;
+    if (crypto_key->valid)
+        crypto_free_aead(crypto_key->aead);
 
     ret = wifi67_crypto_alloc_tfm(crypto_key);
+    if (ret)
+        return ret;
+
+    memcpy(crypto_key->key, key, key_len);
+    crypto_key->key_len = key_len;
+    crypto_key->valid = true;
+
+    ret = crypto_aead_setkey(crypto_key->aead, key, key_len);
     if (ret) {
-        spin_unlock(&crypto->lock);
+        crypto_free_aead(crypto_key->aead);
+        crypto_key->valid = false;
         return ret;
     }
 
-    if (crypto_key->tfm)
-        crypto_skcipher_setkey(crypto_key->tfm, key, key_len);
-    if (crypto_key->aead)
-        crypto_aead_setkey(crypto_key->aead, key, key_len);
-
-    spin_unlock(&crypto->lock);
     return 0;
 }
 
-int wifi67_crypto_encrypt(struct wifi67_priv *priv, u8 idx, struct sk_buff *skb)
+int wifi67_crypto_encrypt(struct wifi67_priv *priv, u8 key_idx,
+                         struct sk_buff *skb)
 {
-    struct wifi67_crypto *crypto = priv->crypto;
+    struct wifi67_crypto *crypto = &priv->crypto;
     struct wifi67_crypto_key *crypto_key;
+    struct aead_request *req;
     struct scatterlist sg;
-    struct skcipher_request *req;
     int ret;
 
-    if (idx >= WIFI67_MAX_KEY_ENTRIES)
+    if (key_idx >= WIFI67_MAX_KEY_ENTRIES)
         return -EINVAL;
 
-    spin_lock(&crypto->lock);
-    crypto_key = &crypto->keys[idx];
-    if (crypto_key->alg == CRYPTO_ALG_NONE) {
-        spin_unlock(&crypto->lock);
+    crypto_key = &crypto->keys[key_idx];
+    if (!crypto_key->valid)
         return -EINVAL;
-    }
 
-    req = skcipher_request_alloc(crypto_key->tfm, GFP_ATOMIC);
-    if (!req) {
-        spin_unlock(&crypto->lock);
+    req = aead_request_alloc(crypto_key->aead, GFP_ATOMIC);
+    if (!req)
         return -ENOMEM;
-    }
 
     sg_init_one(&sg, skb->data, skb->len);
-    skcipher_request_set_crypt(req, &sg, &sg, skb->len, crypto_key->iv);
-    ret = crypto_skcipher_encrypt(req);
-    skcipher_request_free(req);
+    aead_request_set_ad(req, 0);
+    aead_request_set_crypt(req, &sg, &sg, skb->len, crypto_key->iv);
 
-    spin_unlock(&crypto->lock);
+    ret = crypto_aead_encrypt(req);
+    aead_request_free(req);
+
     return ret;
 }
 
-int wifi67_crypto_decrypt(struct wifi67_priv *priv, u8 idx, struct sk_buff *skb)
+int wifi67_crypto_decrypt(struct wifi67_priv *priv, u8 key_idx,
+                         struct sk_buff *skb)
 {
-    struct wifi67_crypto *crypto = priv->crypto;
+    struct wifi67_crypto *crypto = &priv->crypto;
     struct wifi67_crypto_key *crypto_key;
+    struct aead_request *req;
     struct scatterlist sg;
-    struct skcipher_request *req;
     int ret;
 
-    if (idx >= WIFI67_MAX_KEY_ENTRIES)
+    if (key_idx >= WIFI67_MAX_KEY_ENTRIES)
         return -EINVAL;
 
-    spin_lock(&crypto->lock);
-    crypto_key = &crypto->keys[idx];
-    if (crypto_key->alg == CRYPTO_ALG_NONE) {
-        spin_unlock(&crypto->lock);
+    crypto_key = &crypto->keys[key_idx];
+    if (!crypto_key->valid)
         return -EINVAL;
-    }
 
-    req = skcipher_request_alloc(crypto_key->tfm, GFP_ATOMIC);
-    if (!req) {
-        spin_unlock(&crypto->lock);
+    req = aead_request_alloc(crypto_key->aead, GFP_ATOMIC);
+    if (!req)
         return -ENOMEM;
-    }
 
     sg_init_one(&sg, skb->data, skb->len);
-    skcipher_request_set_crypt(req, &sg, &sg, skb->len, crypto_key->iv);
-    ret = crypto_skcipher_decrypt(req);
-    skcipher_request_free(req);
+    aead_request_set_ad(req, 0);
+    aead_request_set_crypt(req, &sg, &sg, skb->len, crypto_key->iv);
 
-    spin_unlock(&crypto->lock);
+    ret = crypto_aead_decrypt(req);
+    aead_request_free(req);
+
     return ret;
 } 
