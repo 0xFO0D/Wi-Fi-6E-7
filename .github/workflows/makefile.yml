@@ -1,0 +1,42 @@
+name: WiFi Driver Build CI
+
+on:
+  push:
+    branches: [ "driver" ]
+  pull_request:
+    branches: [ "driver" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Build Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential linux-headers-$(uname -r) bc libelf-dev
+
+    - name: Set Kernel Build Environment
+      run: |
+        echo "KERNELRELEASE=$(uname -r)" >> $GITHUB_ENV
+        echo "KERNEL_DIR=/lib/modules/$(uname -r)/build" >> $GITHUB_ENV
+
+    - name: Clean Previous Build
+      run: make clean
+
+    - name: Build Driver
+      run: make
+
+    - name: Run Tests
+      run: sudo ./tests/test_driver.sh
+
+    - name: Archive Build Artifacts
+      uses: actions/upload-artifact@v3
+      with:
+        name: wifi67-driver
+        path: |
+          *.ko
+          Module.symvers
+          modules.order
