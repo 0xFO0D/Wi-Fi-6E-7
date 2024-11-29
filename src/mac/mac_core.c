@@ -1,49 +1,35 @@
 #include <linux/module.h>
+#include <linux/etherdevice.h>
 #include <linux/pci.h>
-#include <linux/if_ether.h>
-#include <net/mac80211.h>
-
+#include <linux/netdevice.h>
+#include <linux/workqueue.h>
 #include "../../include/mac/mac_core.h"
 #include "../../include/core/wifi67.h"
 
-/* Register definitions */
-#define WIFI67_MAC_CTRL        0x0000
-#define WIFI67_MAC_STATUS      0x0004
-#define WIFI67_MAC_CONFIG      0x0008
-#define WIFI67_MAC_ADDR_L      0x000C
-#define WIFI67_MAC_ADDR_H      0x0010
-#define WIFI67_MAC_BSSID_L     0x0014
-#define WIFI67_MAC_BSSID_H     0x0018
+/* Remove all #define statements as they're already in mac_defs.h */
 
-/* Control register bits */
-#define MAC_CTRL_ENABLE        BIT(0)
-#define MAC_CTRL_RESET         BIT(1)
-#define MAC_CTRL_RX_EN         BIT(2)
-#define MAC_CTRL_TX_EN         BIT(3)
-#define MAC_CTRL_PROMISC       BIT(4)
-
-static void wifi67_mac_hw_init(struct wifi67_priv *priv)
+static int wifi67_mac_hw_init(struct wifi67_mac *mac)
 {
-    struct wifi67_mac *mac = &priv->mac;
     u32 reg;
 
     /* Reset MAC */
     iowrite32(MAC_CTRL_RESET, mac->regs + WIFI67_MAC_CTRL);
-    udelay(100);
+    msleep(1);
 
-    /* Clear reset and enable MAC */
-    reg = MAC_CTRL_ENABLE | MAC_CTRL_RX_EN | MAC_CTRL_TX_EN;
+    /* Enable basic features */
+    reg = MAC_CTRL_TX_EN | MAC_CTRL_RX_EN;
     iowrite32(reg, mac->regs + WIFI67_MAC_CTRL);
 
-    /* Set capabilities */
-    reg = WIFI67_MAC_CAP_MLO | WIFI67_MAC_CAP_MU_MIMO | 
+    /* Configure capabilities */
+    reg = WIFI67_MAC_CAP_MLO | WIFI67_MAC_CAP_MU_MIMO |
           WIFI67_MAC_CAP_OFDMA | WIFI67_MAC_CAP_TWT;
     iowrite32(reg, mac->regs + WIFI67_MAC_CONFIG);
+
+    return 0;
 }
 
-static void wifi67_mac_set_addr(struct wifi67_priv *priv)
+static void wifi67_mac_set_addr(struct wifi67_mac *mac)
 {
-    struct wifi67_mac *mac = &priv->mac;
     u32 addr_l, addr_h;
 
     addr_l = *(u32 *)mac->addr;
@@ -53,39 +39,69 @@ static void wifi67_mac_set_addr(struct wifi67_priv *priv)
     iowrite32(addr_h, mac->regs + WIFI67_MAC_ADDR_H);
 }
 
+static void wifi67_mac_tx_work(struct work_struct *work)
+{
+    struct wifi67_mac *mac = container_of(work, struct wifi67_mac, tx_work);
+    struct wifi67_mac_queue *queue;
+    struct sk_buff *skb;
+    int i;
+
+    for (i = 0; i < WIFI67_NUM_TX_QUEUES; i++) {
+        queue = &mac->tx_queues[i];
+        
+        spin_lock_bh(&queue->lock);
+        while ((skb = skb_dequeue(&queue->skbs))) {
+            /* Process TX packet */
+            if (queue->stopped) {
+                skb_queue_head(&queue->skbs, skb);
+                break;
+            }
+            /* Add actual TX implementation here */
+            dev_kfree_skb(skb);
+        }
+        spin_unlock_bh(&queue->lock);
+    }
+}
+
 int wifi67_mac_init(struct wifi67_priv *priv)
 {
     struct wifi67_mac *mac = &priv->mac;
-    int i;
+    int i, ret;
 
     /* Initialize locks */
     spin_lock_init(&mac->lock);
 
-    /* Initialize queues */
+    /* Initialize TX queues */
     for (i = 0; i < WIFI67_NUM_TX_QUEUES; i++) {
         skb_queue_head_init(&mac->tx_queues[i].skbs);
         spin_lock_init(&mac->tx_queues[i].lock);
         mac->tx_queues[i].stopped = false;
     }
 
+    /* Initialize RX queues */
     for (i = 0; i < WIFI67_NUM_RX_QUEUES; i++) {
         skb_queue_head_init(&mac->rx_queues[i].skbs);
         spin_lock_init(&mac->rx_queues[i].lock);
         mac->rx_queues[i].stopped = false;
     }
 
-    /* Map MAC registers */
+    /* Map registers */
     mac->regs = priv->mmio + 0x3000;  /* MAC register offset */
 
-    /* Set initial state */
-    mac->state = WIFI67_MAC_OFF;
+    /* Initialize state */
+    atomic_set(&mac->state, WIFI67_MAC_OFF);
+
+    /* Initialize work */
+    INIT_WORK(&mac->tx_work, wifi67_mac_tx_work);
+
+    /* Generate random MAC address */
+    eth_random_addr(mac->addr);
+    wifi67_mac_set_addr(mac);
 
     /* Initialize hardware */
-    wifi67_mac_hw_init(priv);
-
-    /* Set MAC address */
-    eth_random_addr(mac->addr);
-    wifi67_mac_set_addr(priv);
+    ret = wifi67_mac_hw_init(mac);
+    if (ret)
+        return ret;
 
     return 0;
 }

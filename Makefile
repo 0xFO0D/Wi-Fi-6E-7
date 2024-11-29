@@ -2,13 +2,17 @@ obj-m += wifi67.o
 
 wifi67-objs := \
     src/core/main.o \
+    src/core/bands.o \
     src/hal/hardware.o \
     src/mac/mac_core.o \
     src/phy/phy_core.o \
     src/dma/dma_core.o \
     src/regulatory/reg_core.o \
     src/crypto/crypto_core.o \
-    src/firmware/fw_core.o
+    src/firmware/fw_core.o \
+    src/debug/debug.o \
+    src/perf/perf_monitor.o \
+    src/diag/hw_diag.o
 
 # Add CFLAGS for debugging and optimization
 ccflags-y := -Wall -Wextra -g -O2

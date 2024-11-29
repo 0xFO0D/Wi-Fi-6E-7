@@ -5,30 +5,38 @@
 #include <linux/netdevice.h>
 #include <linux/pci.h>
 #include <net/mac80211.h>
+#include "wifi67_forward.h"
 
-/* Include component headers */
-#include "../phy/phy_core.h"
 #include "../mac/mac_core.h"
+#include "../phy/phy_core.h"
 #include "../dma/dma_core.h"
-#include "../regulatory/reg_core.h"
-#include "../crypto/crypto_core.h"
-#include "../firmware/fw_core.h"
 #include "../hal/hardware.h"
+#include "../regulatory/reg_types.h"
+#include "../crypto/crypto_core.h"
+#include "../firmware/fw_types.h"
+#include "../debug/debug_types.h"
+#include "../perf/perf_types.h"
+#include "../diag/diag_types.h"
 
+/* Main driver private structure */
 struct wifi67_priv {
-    struct pci_dev *pdev;
     struct ieee80211_hw *hw;
-    struct net_device *netdev;
+    struct pci_dev *pdev;
+    
+    /* Memory-mapped I/O */
     void __iomem *mmio;
     
-    /* Components */
-    struct wifi67_phy phy;
+    /* Component structures */
     struct wifi67_mac mac;
+    struct wifi67_phy phy;
     struct wifi67_dma dma;
+    struct wifi67_hw hal;
     struct wifi67_regulatory reg;
     struct wifi67_crypto crypto;
     struct wifi67_firmware fw;
-    struct wifi67_hw hal;
+    struct wifi67_debugfs debugfs;
+    struct wifi67_perf_monitor perf;
+    struct wifi67_hw_diag hw_diag;
     
     /* Locks */
     spinlock_t lock;

@@ -1,40 +1,62 @@
 #include <linux/module.h>
 #include <linux/firmware.h>
+#include <linux/io.h>
 #include <linux/delay.h>
 
 #include "../../include/firmware/fw_core.h"
+#include "../../include/firmware/fw_regs.h"
 #include "../../include/core/wifi67.h"
+#include "../../include/core/wifi67_debug.h"
 
 int wifi67_fw_load(struct wifi67_priv *priv)
 {
     struct wifi67_firmware *fw = &priv->fw;
-    resource_size_t fw_addr;
+    struct wifi67_fw_header *header;
+    phys_addr_t fw_addr;
     int ret;
 
-    ret = request_firmware(&fw->fw_data, WIFI67_FW_NAME, &priv->pdev->dev);
+    /* Request firmware from the kernel */
+    ret = request_firmware(&fw->fw, WIFI67_FW_NAME, &priv->pdev->dev);
     if (ret) {
-        dev_err(&priv->pdev->dev, "Failed to load firmware\n");
-        fw->fw_data = NULL;
+        wifi67_err(priv, "Failed to load firmware: %d\n", ret);
         return ret;
     }
 
-    /* Calculate firmware physical address */
-    fw_addr = pci_resource_start(priv->pdev, 0) + 0x1000;
-
-    /* Map firmware to device memory */
-    fw->fw_mem = ioremap(fw_addr, fw->fw_data->size);
+    /* Allocate DMA memory for firmware */
+    fw->fw_dma_size = fw->fw->size;
+    fw->fw_mem = dma_alloc_coherent(&priv->pdev->dev, fw->fw_dma_size,
+                                   &fw->fw_dma_addr, GFP_KERNEL);
     if (!fw->fw_mem) {
-        dev_err(&priv->pdev->dev, "Failed to map firmware memory\n");
-        release_firmware(fw->fw_data);
-        fw->fw_data = NULL;
+        wifi67_err(priv, "Failed to allocate firmware DMA memory\n");
+        release_firmware(fw->fw);
         return -ENOMEM;
     }
 
-    /* Copy firmware to device memory */
-    memcpy_toio(fw->fw_mem, fw->fw_data->data, fw->fw_data->size);
+    /* Copy firmware to DMA memory */
+    memcpy(fw->fw_mem, fw->fw->data, fw->fw->size);
+
+    /* Verify firmware header */
+    header = (struct wifi67_fw_header *)fw->fw_mem;
+    if (header->magic != WIFI67_FW_MAGIC) {
+        wifi67_err(priv, "Invalid firmware magic: 0x%08x\n", header->magic);
+        goto err_free_dma;
+    }
+
+    fw->version = header->version;
+    fw->api_version = header->api_version;
     fw->loaded = true;
 
+    wifi67_info(priv, "Firmware loaded: v%u.%u (API v%u)\n",
+                fw->version >> 16, fw->version & 0xFFFF,
+                fw->api_version);
+
     return 0;
+
+err_free_dma:
+    dma_free_coherent(&priv->pdev->dev, fw->fw_dma_size,
+                      fw->fw_mem, fw->fw_dma_addr);
+    release_firmware(fw->fw);
+    return -EINVAL;
 }
 
 void wifi67_fw_unload(struct wifi67_priv *priv)
@@ -45,65 +67,78 @@ void wifi67_fw_unload(struct wifi67_priv *priv)
         wifi67_fw_stop(priv);
 
     if (fw->fw_mem) {
-        iounmap(fw->fw_mem);
+        dma_free_coherent(&priv->pdev->dev, fw->fw_dma_size,
+                         fw->fw_mem, fw->fw_dma_addr);
         fw->fw_mem = NULL;
     }
 
-    if (fw->fw_data) {
-        release_firmware(fw->fw_data);
-        fw->fw_data = NULL;
+    if (fw->fw) {
+        release_firmware(fw->fw);
+        fw->fw = NULL;
     }
 
     fw->loaded = false;
+    fw->verified = false;
 }
 
 int wifi67_fw_verify(struct wifi67_priv *priv)
 {
     struct wifi67_firmware *fw = &priv->fw;
-    u32 magic;
+    struct wifi67_fw_header *header;
+    u32 checksum = 0;
+    u8 *data;
+    int i;
 
     if (!fw->loaded)
         return -EINVAL;
 
-    /* Read and verify firmware magic */
-    magic = ioread32(fw->fw_mem);
-    if (magic != WIFI67_FW_MAGIC) {
-        dev_err(&priv->pdev->dev, "Invalid firmware magic: %08x\n", magic);
+    header = (struct wifi67_fw_header *)fw->fw_mem;
+    data = (u8 *)fw->fw_mem + sizeof(*header);
+
+    /* Calculate checksum */
+    for (i = 0; i < header->size; i++)
+        checksum += data[i];
+
+    if (checksum != header->checksum) {
+        wifi67_err(priv, "Firmware checksum mismatch\n");
         return -EINVAL;
     }
 
+    fw->verified = true;
     return 0;
 }
 
 int wifi67_fw_start(struct wifi67_priv *priv)
 {
     struct wifi67_firmware *fw = &priv->fw;
-    int ret;
+    struct wifi67_fw_header *header;
 
-    if (!fw->loaded)
+    if (!fw->loaded || !fw->verified)
         return -EINVAL;
 
-    ret = wifi67_fw_verify(priv);
-    if (ret)
-        return ret;
+    header = (struct wifi67_fw_header *)fw->fw_mem;
 
     /* Start firmware execution */
-    iowrite32(1, priv->mmio + 0x100);
-    fw->running = true;
+    iowrite32(header->entry_point, priv->mmio + WIFI67_REG_FW_ENTRY);
+    iowrite32(1, priv->mmio + WIFI67_REG_FW_START);
 
+    /* Wait for firmware to initialize */
+    msleep(100);
+
+    fw->running = true;
     return 0;
 }
 
-int wifi67_fw_stop(struct wifi67_priv *priv)
+void wifi67_fw_stop(struct wifi67_priv *priv)
 {
     struct wifi67_firmware *fw = &priv->fw;
 
     if (!fw->running)
-        return 0;
+        return;
 
     /* Stop firmware execution */
-    iowrite32(0, priv->mmio + 0x100);
-    fw->running = false;
+    iowrite32(0, priv->mmio + WIFI67_REG_FW_START);
+    msleep(50);
 
-    return 0;
+    fw->running = false;
 } 

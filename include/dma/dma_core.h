@@ -56,5 +56,6 @@ void wifi67_dma_stop(struct wifi67_priv *priv);
 int wifi67_dma_tx(struct wifi67_priv *priv, struct sk_buff *skb, u8 queue);
 void wifi67_dma_rx(struct wifi67_priv *priv, u8 queue);
 irqreturn_t wifi67_dma_isr(struct wifi67_priv *priv);
+void wifi67_dma_tx_cleanup(struct wifi67_priv *priv, u8 queue);
 
 #endif /* _WIFI67_DMA_CORE_H_ */ 
