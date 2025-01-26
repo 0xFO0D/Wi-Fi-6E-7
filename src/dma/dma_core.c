@@ -88,6 +88,105 @@ static void wifi67_dma_hw_init(struct wifi67_dma *dma)
     writel(WIFI67_DMA_MAX_BURST_SIZE, dma->regs + WIFI67_DMA_REG_DESC_CTRL);
 }
 
+static void wifi67_dma_channel_recover(struct wifi67_priv *priv,
+                                   struct wifi67_dma_channel *chan,
+                                   u32 error_type)
+{
+    struct dma_monitor_stats *stats = &monitor_ctx.channel_stats[chan->channel_id];
+    unsigned long flags;
+    u32 val;
+
+    atomic64_inc(&stats->recovery_attempts);
+
+    /* Stop channel */
+    wifi67_dma_channel_stop(priv, chan->channel_id);
+
+    /* Reset channel hardware */
+    val = readl(chan->regs + WIFI67_DMA_REG_CTRL);
+    val |= WIFI67_DMA_CTRL_RESET;
+    writel(val, chan->regs + WIFI67_DMA_REG_CTRL);
+    udelay(100);
+
+    /* Clear error status */
+    writel(0xFFFFFFFF, chan->regs + WIFI67_DMA_REG_ERR_STATUS);
+
+    /* Reinitialize rings if necessary */
+    if (error_type & (DMA_ERR_DESC_ERROR | DMA_ERR_RING_FULL)) {
+        spin_lock_irqsave(&chan->tx_ring.lock, flags);
+        chan->tx_ring.head = chan->tx_ring.tail = 0;
+        spin_unlock_irqrestore(&chan->tx_ring.lock, flags);
+
+        spin_lock_irqsave(&chan->rx_ring.lock, flags);
+        chan->rx_ring.head = chan->rx_ring.tail = 0;
+        spin_unlock_irqrestore(&chan->rx_ring.lock, flags);
+    }
+
+    /* Restart channel */
+    wifi67_dma_channel_start(priv, chan->channel_id);
+
+    atomic64_inc(&stats->successful_recoveries);
+}
+
+static void wifi67_dma_handle_error_locked(struct wifi67_priv *priv,
+                                         struct wifi67_dma_channel *chan,
+                                         u32 error_type)
+{
+    struct dma_monitor_stats *stats = &monitor_ctx.channel_stats[chan->channel_id];
+    unsigned long flags;
+
+    spin_lock_irqsave(&stats->lock, flags);
+    stats->error_count_window++;
+    stats->last_error = ktime_get();
+    spin_unlock_irqrestore(&stats->lock, flags);
+
+    if (error_type & DMA_ERR_FATAL) {
+        pr_err("Fatal DMA error on channel %d: 0x%08x\n",
+               chan->channel_id, error_type);
+        return;
+    }
+
+    /* Attempt recovery based on error type */
+    wifi67_dma_channel_recover(priv, chan, error_type);
+}
+
+static int wifi67_dma_ring_check_errors(struct wifi67_priv *priv,
+                                      struct wifi67_dma_channel *chan,
+                                      struct wifi67_dma_ring *ring,
+                                      bool is_tx)
+{
+    u32 val = readl(chan->regs + WIFI67_DMA_REG_ERR_STATUS);
+    u32 error_type = DMA_ERR_NONE;
+
+    if (!val)
+        return 0;
+
+    if (val & BIT(0))
+        error_type |= DMA_ERR_DESC_OWNERSHIP;
+    if (val & BIT(1))
+        error_type |= DMA_ERR_INVALID_LEN;
+    if (val & BIT(2))
+        error_type |= DMA_ERR_RING_FULL;
+    if (val & BIT(3))
+        error_type |= DMA_ERR_INVALID_ADDR;
+    if (val & BIT(4))
+        error_type |= DMA_ERR_BUS_ERROR;
+    if (val & BIT(5))
+        error_type |= DMA_ERR_DATA_ERROR;
+    if (val & BIT(6))
+        error_type |= DMA_ERR_DESC_ERROR;
+    if (val & BIT(7))
+        error_type |= DMA_ERR_FIFO_ERROR;
+    if (val & BIT(8))
+        error_type |= DMA_ERR_HARDWARE;
+    if (val & BIT(31))
+        error_type |= DMA_ERR_FATAL;
+
+    if (error_type != DMA_ERR_NONE)
+        wifi67_dma_handle_error_locked(priv, chan, error_type);
+
+    return error_type ? -EIO : 0;
+}
+
 int wifi67_dma_init(struct wifi67_priv *priv)
 {
     struct wifi67_dma *dma;
@@ -105,6 +204,11 @@ int wifi67_dma_init(struct wifi67_priv *priv)
     dma->regs = priv->hw_info->membase + 0x5000; /* DMA base offset */
     dma->num_channels = WIFI67_DMA_MAX_CHANNELS;
 
+    /* Initialize monitoring system */
+    ret = wifi67_dma_monitor_init(priv);
+    if (ret)
+        goto err_free_dma;
+
     /* Initialize hardware */
     wifi67_dma_hw_init(dma);
 
@@ -112,6 +216,11 @@ int wifi67_dma_init(struct wifi67_priv *priv)
     memset(&dma->stats, 0, sizeof(dma->stats));
 
     return 0;
+
+err_free_dma:
+    kfree(dma);
+    priv->dma_dev = NULL;
+    return ret;
 }
 
 void wifi67_dma_deinit(struct wifi67_priv *priv)
@@ -134,6 +243,9 @@ void wifi67_dma_deinit(struct wifi67_priv *priv)
 
     /* Clear any pending interrupts */
     writel(0xFFFFFFFF, dma->regs + WIFI67_DMA_REG_INT_STATUS);
+
+    /* Deinitialize monitoring system */
+    wifi67_dma_monitor_deinit(priv);
 
     kfree(dma);
     priv->dma_dev = NULL;
@@ -163,6 +275,14 @@ int wifi67_dma_channel_init(struct wifi67_priv *priv, u32 channel_id)
         return ret;
     }
 
+    /* Initialize channel registers */
+    writel(WIFI67_DMA_CTRL_RESET, chan->regs + WIFI67_DMA_REG_CTRL);
+    udelay(100);
+
+    /* Configure error detection and reporting */
+    writel(0xFFFFFFFF, chan->regs + WIFI67_DMA_REG_ERR_STATUS); /* Clear errors */
+    writel(0xFFFFFFFF, chan->regs + WIFI67_DMA_REG_INT_MASK);   /* Enable all interrupts */
+
     chan->enabled = true;
     return 0;
 }
@@ -179,6 +299,12 @@ void wifi67_dma_channel_deinit(struct wifi67_priv *priv, u32 channel_id)
     
     /* Stop channel first */
     wifi67_dma_channel_stop(priv, channel_id);
+
+    /* Disable interrupts */
+    writel(0, chan->regs + WIFI67_DMA_REG_INT_MASK);
+
+    /* Clear any pending errors */
+    writel(0xFFFFFFFF, chan->regs + WIFI67_DMA_REG_ERR_STATUS);
 
     /* Free rings */
     wifi67_dma_ring_free(priv, &chan->tx_ring);
@@ -238,6 +364,7 @@ int wifi67_dma_ring_add_buffer(struct wifi67_priv *priv, u32 channel_id,
     unsigned long flags;
     dma_addr_t dma_addr;
     u32 next;
+    int ret;
 
     if (!dma || channel_id >= dma->num_channels || !buf || !len)
         return -EINVAL;
@@ -250,21 +377,25 @@ int wifi67_dma_ring_add_buffer(struct wifi67_priv *priv, u32 channel_id,
 
     spin_lock_irqsave(&ring->lock, flags);
 
+    /* Check for errors before proceeding */
+    ret = wifi67_dma_ring_check_errors(priv, chan, ring, is_tx);
+    if (ret)
+        goto unlock;
+
     /* Check if ring is full */
     next = (ring->head + 1) % ring->size;
     if (next == ring->tail) {
-        dma->stats.ring_full++;
-        spin_unlock_irqrestore(&ring->lock, flags);
-        return -ENOSPC;
+        wifi67_dma_monitor_ring_full(priv, channel_id);
+        ret = -ENOSPC;
+        goto unlock;
     }
 
     /* Map buffer */
-    dma_addr = dma_map_single(dma->dev, buf, len, 
+    dma_addr = dma_map_single(dma->dev, buf, len,
                              is_tx ? DMA_TO_DEVICE : DMA_FROM_DEVICE);
     if (dma_mapping_error(dma->dev, dma_addr)) {
-        dma->stats.buf_errors++;
-        spin_unlock_irqrestore(&ring->lock, flags);
-        return -ENOMEM;
+        ret = -ENOMEM;
+        goto unlock;
     }
 
     /* Setup descriptor */
@@ -288,9 +419,13 @@ int wifi67_dma_ring_add_buffer(struct wifi67_priv *priv, u32 channel_id,
     else
         dma->stats.rx_bytes += len;
 
-    spin_unlock_irqrestore(&ring->lock, flags);
+    /* Notify hardware of new descriptor */
+    writel(ring->head, chan->regs + (is_tx ? WIFI67_DMA_REG_TX_HEAD :
+                                            WIFI67_DMA_REG_RX_HEAD));
 
-    return 0;
+unlock:
+    spin_unlock_irqrestore(&ring->lock, flags);
+    return ret;
 }
 
 void *wifi67_dma_ring_get_buffer(struct wifi67_priv *priv, u32 channel_id,
@@ -302,6 +437,7 @@ void *wifi67_dma_ring_get_buffer(struct wifi67_priv *priv, u32 channel_id,
     struct wifi67_dma_desc *desc;
     unsigned long flags;
     void *buf;
+    int ret;
 
     if (!dma || channel_id >= dma->num_channels || !len)
         return NULL;
@@ -314,17 +450,24 @@ void *wifi67_dma_ring_get_buffer(struct wifi67_priv *priv, u32 channel_id,
 
     spin_lock_irqsave(&ring->lock, flags);
 
+    /* Check for errors */
+    ret = wifi67_dma_ring_check_errors(priv, chan, ring, is_tx);
+    if (ret)
+        goto unlock;
+
     /* Check if ring is empty */
-    if (ring->tail == ring->head) {
-        spin_unlock_irqrestore(&ring->lock, flags);
-        return NULL;
-    }
+    if (ring->tail == ring->head)
+        goto unlock;
 
     /* Get descriptor */
     desc = &ring->desc[ring->tail];
-    if (desc->flags & cpu_to_le32(WIFI67_DMA_DESC_OWN)) {
-        spin_unlock_irqrestore(&ring->lock, flags);
-        return NULL;
+    if (desc->flags & cpu_to_le32(WIFI67_DMA_DESC_OWN))
+        goto unlock;
+
+    /* Check for descriptor errors */
+    if (desc->status & cpu_to_le32(0xFF000000)) {
+        wifi67_dma_handle_error_locked(priv, chan, DMA_ERR_DESC_ERROR);
+        goto unlock;
     }
 
     /* Get buffer */
@@ -342,9 +485,16 @@ void *wifi67_dma_ring_get_buffer(struct wifi67_priv *priv, u32 channel_id,
     else
         dma->stats.rx_packets++;
 
-    spin_unlock_irqrestore(&ring->lock, flags);
+    /* Update hardware tail pointer */
+    writel(ring->tail, chan->regs + (is_tx ? WIFI67_DMA_REG_TX_TAIL :
+                                            WIFI67_DMA_REG_RX_TAIL));
 
+    spin_unlock_irqrestore(&ring->lock, flags);
     return buf;
+
+unlock:
+    spin_unlock_irqrestore(&ring->lock, flags);
+    return NULL;
 }
 
 int wifi67_dma_get_stats(struct wifi67_priv *priv, struct wifi67_dma_stats *stats)

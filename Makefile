@@ -9,6 +9,7 @@ wifi67-objs := \
     src/mac/mac_core.o \
     src/phy/phy_core.o \
     src/dma/dma_core.o \
+    src/dma/dma_monitor.o \
     src/regulatory/reg_core.o \
     src/crypto/crypto_core.o \
     src/firmware/fw_core.o \
@@ -49,4 +50,16 @@ install: modules
 	$(MAKE) -C $(KDIR) M=$(PWD) modules_install
 	depmod -a
 
-.PHONY: all modules clean test install
+# Debug targets
+debugfs:
+	@echo "DMA Monitor debugfs interface:"
+	@cat /sys/kernel/debug/wifi67_dma/monitor
+
+monitor: modules
+	@echo "Starting DMA monitoring..."
+	@sudo insmod wifi67.ko
+	@sleep 1
+	@cat /sys/kernel/debug/wifi67_dma/monitor
+	@sudo rmmod wifi67
+
+.PHONY: all modules clean test install debugfs monitor
