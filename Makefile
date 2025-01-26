@@ -17,9 +17,12 @@ wifi67-objs := \
     src/diag/hw_diag.o \
     src/power/power_mgmt.o
 
-# Test module
+# Test modules
 obj-m += wifi67_test.o
+obj-m += dma_test.o
+
 wifi67_test-objs := tests/band_test.o
+dma_test-objs := tests/dma_test.o
 
 # Kernel build directory
 KDIR ?= /lib/modules/$(shell uname -r)/build
@@ -27,13 +30,23 @@ KDIR ?= /lib/modules/$(shell uname -r)/build
 # Build flags
 EXTRA_CFLAGS := -I$(PWD)/include -DDEBUG
 
-all:
-	make -C $(KDIR) M=$(PWD) modules
+# Test targets
+TEST_MODULES := wifi67_test.ko dma_test.ko
+
+all: modules
+
+modules:
+	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
 clean:
-	make -C $(KDIR) M=$(PWD) clean
+	$(MAKE) -C $(KDIR) M=$(PWD) clean
 
-test: all
-	sudo ./tests/test_driver.sh
+test: modules
+	sudo ./test.sh
 
-.PHONY: all clean test
+# Install modules
+install: modules
+	$(MAKE) -C $(KDIR) M=$(PWD) modules_install
+	depmod -a
+
+.PHONY: all modules clean test install
