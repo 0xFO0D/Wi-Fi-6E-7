@@ -1,6 +1,7 @@
 obj-m += wifi67.o
 obj-m += managh_wifi_usb.o
 obj-m += managh_wifi_pci.o
+obj-m += managh_firmware_test.o
 
 wifi67-objs := \
     src/core/main.o \
@@ -21,10 +22,15 @@ wifi67-objs := \
     src/power/power_mgmt.o
 
 managh_wifi_usb-objs := \
-    managh_usb&cards_suprtd/usb/usb_driver.o
+    managh_usb&cards_suprtd/usb/usb_driver.o \
+    managh_usb&cards_suprtd/firmware/firmware_loader.o
 
 managh_wifi_pci-objs := \
-    managh_usb&cards_suprtd/pci/pci_driver.o
+    managh_usb&cards_suprtd/pci/pci_driver.o \
+    managh_usb&cards_suprtd/firmware/firmware_loader.o
+
+managh_firmware_test-objs := \
+    managh_usb&cards_suprtd/tests/firmware_test.o
 
 # Test modules
 obj-m += wifi67_test.o
@@ -40,7 +46,7 @@ KDIR ?= /lib/modules/$(shell uname -r)/build
 EXTRA_CFLAGS := -I$(PWD)/include -DDEBUG
 
 # Test targets
-TEST_MODULES := wifi67_test.ko dma_test.ko
+TEST_MODULES := wifi67_test.ko dma_test.ko managh_firmware_test.ko
 
 all: modules
 
@@ -49,13 +55,19 @@ modules:
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
+	rm -f modules.order Module.symvers
 
 test: modules
 	sudo ./test.sh
 
-# Install modules
+# Install modules and firmware
 install: modules
 	$(MAKE) -C $(KDIR) M=$(PWD) modules_install
+	# Install firmware files
+	install -d /lib/firmware/mediatek
+	install -d /lib/firmware/realtek
+	install -m 644 firmware/mediatek/* /lib/firmware/mediatek/
+	install -m 644 firmware/realtek/* /lib/firmware/realtek/
 	depmod -a
 
 # Debug targets
@@ -70,4 +82,12 @@ monitor: modules
 	@cat /sys/kernel/debug/wifi67_dma/monitor
 	@sudo rmmod wifi67
 
-.PHONY: all modules clean test install debugfs monitor
+# Firmware test targets
+firmware-test: modules
+	@echo "Running firmware tests..."
+	@sudo insmod managh_firmware_test.ko
+	@sleep 1
+	@dmesg | tail -n 20
+	@sudo rmmod managh_firmware_test
+
+.PHONY: all modules clean test install debugfs monitor firmware-test
