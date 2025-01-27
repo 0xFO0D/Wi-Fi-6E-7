@@ -3,6 +3,7 @@ obj-m += managh_wifi_usb.o
 obj-m += managh_wifi_pci.o
 obj-m += test_fw_common.o
 obj-m += test_fw_secure.o
+obj-m += test_fw_tpm.o
 
 wifi67-objs := \
     src/core/main.o \
@@ -36,6 +37,7 @@ managh_wifi_pci-objs := \
 
 test_fw_common-objs := managh_usb&cards_suprtd/firmware/test_fw_common.o
 test_fw_secure-objs := managh_usb&cards_suprtd/firmware/test_fw_secure.o
+test_fw_tpm-objs := managh_usb&cards_suprtd/firmware/test_fw_tpm.o
 
 # Test modules
 obj-m += wifi67_test.o
@@ -51,7 +53,7 @@ KDIR ?= /lib/modules/$(shell uname -r)/build
 EXTRA_CFLAGS := -I$(PWD)/include -DDEBUG
 
 # Test targets
-TEST_MODULES := wifi67_test.ko dma_test.ko test_fw_common.ko test_fw_secure.ko
+TEST_MODULES := wifi67_test.ko dma_test.ko test_fw_common.ko test_fw_secure.ko test_fw_tpm.ko
 
 all: modules
 
@@ -71,7 +73,11 @@ test: modules
 	sudo insmod test_fw_secure.ko
 	@sleep 1
 	sudo rmmod test_fw_secure
-	@dmesg | tail -n 40 | grep -E "firmware|secure"
+	@echo "Running TPM integration tests..."
+	sudo insmod test_fw_tpm.ko
+	@sleep 1
+	sudo rmmod test_fw_tpm
+	@dmesg | tail -n 60 | grep -E "firmware|secure|tpm"
 
 # Install modules and firmware
 install: modules
@@ -87,12 +93,15 @@ install: modules
 debugfs:
 	@echo "DMA Monitor debugfs interface:"
 	@cat /sys/kernel/debug/wifi67_dma/monitor
+	@echo "TPM Policy debugfs interface:"
+	@cat /sys/kernel/debug/wifi67_tpm/policy
 
 monitor: modules
 	@echo "Starting DMA monitoring..."
 	@sudo insmod wifi67.ko
 	@sleep 1
 	@cat /sys/kernel/debug/wifi67_dma/monitor
+	@cat /sys/kernel/debug/wifi67_tpm/policy
 	@sudo rmmod wifi67
 
 .PHONY: all modules clean test install debugfs monitor

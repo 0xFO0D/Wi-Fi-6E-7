@@ -15,53 +15,101 @@ This directory contains the firmware support components for the WiFi 6E/7 driver
 - Firmware image verification using SHA-256
 - RSA signature verification
 - Secure header parsing and validation
-- Support for key management (TODO)
+- Support for key management
+
+### TPM Integration (`fw_tpm.c`)
+- Hardware-backed key storage
+- PCR measurement and validation
+- Quote generation and verification
+- Policy-based key access control
+- Session management for TPM operations
+- Cached policy evaluation
+- Support for multiple PCR banks
 
 ### Test Modules
 - `test_fw_common.c`: Tests for basic firmware functionality
 - `test_fw_secure.c`: Tests for secure boot features
+- `test_fw_tpm.c`: Tests for TPM integration (coming soon)
 
-## Firmware Format
+## TPM Attestation Flow
 
-### Header Structure
+```
+┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+│  Key Access  │     │  TPM Policy  │     │  PCR Quote   │
+│   Request    │ ──> │  Evaluation  │ ──> │ Verification │
+└──────────────┘     └──────────────┘     └──────────────┘
+                           │                      │
+                           v                      v
+                    ┌──────────────┐     ┌──────────────┐
+                    │   Policy     │     │    Quote     │
+                    │    Cache     │     │    Cache     │
+                    └──────────────┘     └──────────────┘
+```
+
+## Security Model
+
+The TPM integration provides the following security guarantees:
+
+1. Hardware-backed key protection
+2. System state validation through PCR measurements
+3. Remote attestation capabilities
+4. Policy-based access control
+5. Protection against rollback attacks
+
+## Policy Configuration
+
+Example policy configuration:
 ```c
-struct secure_header {
-    u32 magic;      /* "WiFi" magic number */
-    u32 version;    /* Header format version */
-    u32 img_size;   /* Size of firmware image */
-    u32 sig_size;   /* Size of signature */
-    u8 hash[32];    /* SHA-256 hash of image */
-    u8 signature[]; /* RSA signature */
+struct tpm_policy_info policy = {
+    .pcr_mask = (1 << TPM_PCR_FIRMWARE_CODE) |
+                (1 << TPM_PCR_FIRMWARE_CONFIG),
+    .flags = POLICY_FLAG_CACHE | POLICY_FLAG_STRICT,
+    .cache_timeout = 300  /* 5 minutes */
 };
 ```
 
-### Supported Features
-- Firmware compression (zlib, xz)
-- Version comparison and rollback prevention
-- Secure boot with RSA-2048 signatures
-- Runtime integrity checking
+## Troubleshooting
+
+Common TPM-related issues:
+
+1. PCR quote verification failures
+   - Check PCR values using `tpm2_pcrread`
+   - Verify system state hasn't changed
+   - Check quote signature
+
+2. Policy evaluation failures
+   - Verify PCR selection mask
+   - Check policy cache timeout
+   - Validate TPM session
 
 ## TODO List
-1. Implement secure key storage mechanism
-2. Add support for key revocation
-3. Implement firmware update recovery
-4. Add support for multiple signature algorithms
-5. Enhance compression options
-6. Add firmware caching support
-7. Implement firmware telemetry
+✓ Implement secure key storage
+✓ Add key revocation support
+✓ Add TPM integration
+✓ Implement PCR quote verification
+✓ Add policy digest calculation
+
+Remaining TODOs:
+- [ ] Add support for custom PCR measurements
+- [ ] Implement TPM event log validation
+- [ ] Add remote attestation service integration
+- [ ] Enhance TPM failure recovery mechanisms
+- [ ] Add support for TPM NV counter for rollback protection
+- [ ] Implement TPM-backed firmware encryption
+- [ ] Add support for TPM2 enhanced authorization
+- [ ] Create TPM policy simulator for testing
 
 ## Usage Example
 
 ```c
-/* Load and verify firmware */
-const struct firmware *fw;
-int ret = request_firmware(&fw, "wifi67_fw.bin", device);
+/* Verify key with TPM quote */
+struct tpm_quote_info quote;
+int ret = fw_tpm_get_quote(key_id, &quote);
 if (ret == 0) {
-    ret = fw_secure_verify(fw->data, fw->size, public_key, key_size);
-    if (ret == FW_ERR_NONE) {
-        /* Firmware is valid, proceed with loading */
+    ret = fw_tpm_verify_quote(&quote);
+    if (ret == 0) {
+        /* Quote verification successful */
     }
-    release_firmware(fw);
 }
 ```
 
@@ -72,43 +120,34 @@ if (ret == 0) {
    make
    ```
 
-2. Run the tests:
+2. Run the TPM tests:
    ```bash
-   make test
-   ```
-
-3. Install the modules:
-   ```bash
-   sudo make install
+   sudo make test TPM=1
    ```
 
 ## Error Codes
 
-- `FW_ERR_NONE`: Success
-- `FW_ERR_REQUEST`: Firmware request failed
-- `FW_ERR_VERIFY`: Verification failed
-- `FW_ERR_LOAD`: Loading failed
-- `FW_ERR_VERSION`: Version check failed
-- `FW_ERR_COMPRESS`: Decompression failed
-- `FW_ERR_SECURE`: Secure boot check failed
-- `FW_ERR_ROLLBACK`: Version rollback detected
+- `KEY_ERR_NONE`: Success
+- `KEY_ERR_QUOTE`: Quote verification failed
+- `KEY_ERR_POLICY`: Policy evaluation failed
+- `KEY_ERR_SESSION`: TPM session error
 
 ## Contributing
 
-When adding new features or fixing bugs:
+When adding new TPM features:
 1. Add appropriate test cases
-2. Update documentation
-3. Follow the Linux kernel coding style
-4. Ensure backward compatibility
-5. Add proper error handling
+2. Update policy documentation
+3. Consider caching implications
+4. Handle TPM errors gracefully
+5. Update security model documentation
 
 ## Security Considerations
 
-1. Always verify firmware signatures before loading
-2. Use secure key storage
-3. Implement rollback protection
-4. Monitor for tampering attempts
-5. Log security-related events
+1. Always verify PCR quotes before key operations
+2. Use strict policy evaluation when required
+3. Implement proper session management
+4. Monitor for TPM errors
+5. Handle cached results carefully
 
 ## License
 
