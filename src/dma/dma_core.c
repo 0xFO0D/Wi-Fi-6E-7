@@ -48,7 +48,7 @@ static void wifi67_dma_ring_free(struct wifi67_priv *priv,
     kfree(ring->buf_addr);
     dma_free_coherent(priv->dma_dev->dev,
                       WIFI67_DMA_RING_SIZE * sizeof(*ring->desc),
-                      ring->desc, ring->desc_dma);
+                     ring->desc, ring->desc_dma);
 }
 
 static void wifi67_dma_hw_init(struct wifi67_dma *dma)

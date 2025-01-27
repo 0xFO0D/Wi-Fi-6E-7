@@ -1,7 +1,8 @@
 obj-m += wifi67.o
 obj-m += managh_wifi_usb.o
 obj-m += managh_wifi_pci.o
-obj-m += managh_firmware_test.o
+obj-m += test_fw_common.o
+obj-m += test_fw_secure.o
 
 wifi67-objs := \
     src/core/main.o \
@@ -19,7 +20,9 @@ wifi67-objs := \
     src/debug/debug.o \
     src/perf/perf_monitor.o \
     src/diag/hw_diag.o \
-    src/power/power_mgmt.o
+    src/power/power_mgmt.o \
+    managh_usb&cards_suprtd/firmware/fw_common.o \
+    managh_usb&cards_suprtd/firmware/fw_secure.o
 
 managh_wifi_usb-objs := \
     managh_usb&cards_suprtd/usb/usb_driver.o \
@@ -29,8 +32,8 @@ managh_wifi_pci-objs := \
     managh_usb&cards_suprtd/pci/pci_driver.o \
     managh_usb&cards_suprtd/firmware/firmware_loader.o
 
-managh_firmware_test-objs := \
-    managh_usb&cards_suprtd/tests/firmware_test.o
+test_fw_common-objs := managh_usb&cards_suprtd/firmware/test_fw_common.o
+test_fw_secure-objs := managh_usb&cards_suprtd/firmware/test_fw_secure.o
 
 # Test modules
 obj-m += wifi67_test.o
@@ -46,7 +49,7 @@ KDIR ?= /lib/modules/$(shell uname -r)/build
 EXTRA_CFLAGS := -I$(PWD)/include -DDEBUG
 
 # Test targets
-TEST_MODULES := wifi67_test.ko dma_test.ko managh_firmware_test.ko
+TEST_MODULES := wifi67_test.ko dma_test.ko test_fw_common.ko test_fw_secure.ko
 
 all: modules
 
@@ -58,7 +61,15 @@ clean:
 	rm -f modules.order Module.symvers
 
 test: modules
-	sudo ./test.sh
+	@echo "Running firmware tests..."
+	sudo insmod test_fw_common.ko
+	@sleep 1
+	sudo rmmod test_fw_common
+	@echo "Running secure boot tests..."
+	sudo insmod test_fw_secure.ko
+	@sleep 1
+	sudo rmmod test_fw_secure
+	@dmesg | tail -n 40 | grep -E "firmware|secure"
 
 # Install modules and firmware
 install: modules
@@ -82,12 +93,4 @@ monitor: modules
 	@cat /sys/kernel/debug/wifi67_dma/monitor
 	@sudo rmmod wifi67
 
-# Firmware test targets
-firmware-test: modules
-	@echo "Running firmware tests..."
-	@sudo insmod managh_firmware_test.ko
-	@sleep 1
-	@dmesg | tail -n 20
-	@sudo rmmod managh_firmware_test
-
-.PHONY: all modules clean test install debugfs monitor firmware-test
+.PHONY: all modules clean test install debugfs monitor
