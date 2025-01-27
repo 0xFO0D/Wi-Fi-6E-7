@@ -4,6 +4,8 @@ obj-m += managh_wifi_pci.o
 obj-m += test_fw_common.o
 obj-m += test_fw_secure.o
 obj-m += test_fw_tpm.o
+obj-m += test_fw_eventlog.o
+obj-m += test_fw_attest.o
 
 wifi67-objs := \
     src/core/main.o \
@@ -25,7 +27,9 @@ wifi67-objs := \
     managh_usb&cards_suprtd/firmware/fw_common.o \
     managh_usb&cards_suprtd/firmware/fw_secure.o \
     managh_usb&cards_suprtd/firmware/fw_keys.o \
-    managh_usb&cards_suprtd/firmware/fw_tpm.o
+    managh_usb&cards_suprtd/firmware/fw_tpm.o \
+    managh_usb&cards_suprtd/firmware/fw_eventlog.o \
+    managh_usb&cards_suprtd/firmware/fw_attest.o
 
 managh_wifi_usb-objs := \
     managh_usb&cards_suprtd/usb/usb_driver.o \
@@ -38,6 +42,8 @@ managh_wifi_pci-objs := \
 test_fw_common-objs := managh_usb&cards_suprtd/firmware/test_fw_common.o
 test_fw_secure-objs := managh_usb&cards_suprtd/firmware/test_fw_secure.o
 test_fw_tpm-objs := managh_usb&cards_suprtd/firmware/test_fw_tpm.o
+test_fw_eventlog-objs := managh_usb&cards_suprtd/firmware/test_fw_eventlog.o
+test_fw_attest-objs := managh_usb&cards_suprtd/firmware/test_fw_attest.o
 
 # Test modules
 obj-m += wifi67_test.o
@@ -53,7 +59,8 @@ KDIR ?= /lib/modules/$(shell uname -r)/build
 EXTRA_CFLAGS := -I$(PWD)/include -DDEBUG
 
 # Test targets
-TEST_MODULES := wifi67_test.ko dma_test.ko test_fw_common.ko test_fw_secure.ko test_fw_tpm.ko
+TEST_MODULES := wifi67_test.ko dma_test.ko test_fw_common.ko test_fw_secure.ko \
+                test_fw_tpm.ko test_fw_eventlog.ko test_fw_attest.ko
 
 all: modules
 
@@ -77,7 +84,15 @@ test: modules
 	sudo insmod test_fw_tpm.ko
 	@sleep 1
 	sudo rmmod test_fw_tpm
-	@dmesg | tail -n 60 | grep -E "firmware|secure|tpm"
+	@echo "Running event log tests..."
+	sudo insmod test_fw_eventlog.ko
+	@sleep 1
+	sudo rmmod test_fw_eventlog
+	@echo "Running attestation tests..."
+	sudo insmod test_fw_attest.ko
+	@sleep 1
+	sudo rmmod test_fw_attest
+	@dmesg | tail -n 100 | grep -E "firmware|secure|tpm|eventlog|attest"
 
 # Install modules and firmware
 install: modules
@@ -95,13 +110,16 @@ debugfs:
 	@cat /sys/kernel/debug/wifi67_dma/monitor
 	@echo "TPM Policy debugfs interface:"
 	@cat /sys/kernel/debug/wifi67_tpm/policy
+	@echo "Event Log debugfs interface:"
+	@cat /sys/kernel/debug/wifi67_eventlog/log
 
 monitor: modules
-	@echo "Starting DMA monitoring..."
+	@echo "Starting monitoring..."
 	@sudo insmod wifi67.ko
 	@sleep 1
 	@cat /sys/kernel/debug/wifi67_dma/monitor
 	@cat /sys/kernel/debug/wifi67_tpm/policy
+	@cat /sys/kernel/debug/wifi67_eventlog/log
 	@sudo rmmod wifi67
 
 .PHONY: all modules clean test install debugfs monitor
