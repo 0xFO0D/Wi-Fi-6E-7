@@ -29,7 +29,8 @@ wifi67-objs := \
     managh_usb&cards_suprtd/firmware/fw_keys.o \
     managh_usb&cards_suprtd/firmware/fw_tpm.o \
     managh_usb&cards_suprtd/firmware/fw_eventlog.o \
-    managh_usb&cards_suprtd/firmware/fw_attest.o
+    managh_usb&cards_suprtd/firmware/fw_attest.o \
+    managh_usb&cards_suprtd/firmware/fw_debugfs.o
 
 managh_wifi_usb-objs := \
     managh_usb&cards_suprtd/usb/usb_driver.o \
@@ -112,6 +113,8 @@ debugfs:
 	@cat /sys/kernel/debug/wifi67_tpm/policy
 	@echo "Event Log debugfs interface:"
 	@cat /sys/kernel/debug/wifi67_eventlog/log
+	@echo "Attestation Status:"
+	@cat /sys/kernel/debug/wifi67_attest/status
 
 monitor: modules
 	@echo "Starting monitoring..."
@@ -120,6 +123,7 @@ monitor: modules
 	@cat /sys/kernel/debug/wifi67_dma/monitor
 	@cat /sys/kernel/debug/wifi67_tpm/policy
 	@cat /sys/kernel/debug/wifi67_eventlog/log
+	@cat /sys/kernel/debug/wifi67_attest/status
 	@sudo rmmod wifi67
 
 .PHONY: all modules clean test install debugfs monitor

@@ -1,6 +1,6 @@
 # WiFi 6E/7 Driver Firmware Support
 
-This directory contains the firmware support components for the WiFi 6E/7 driver, including firmware loading, verification, and secure boot functionality.
+This directory contains the firmware support components for the WiFi 6E/7 driver, including firmware loading, verification, secure boot functionality, and remote attestation.
 
 ## Components
 
@@ -26,10 +26,33 @@ This directory contains the firmware support components for the WiFi 6E/7 driver
 - Cached policy evaluation
 - Support for multiple PCR banks
 
+### Event Log Support (`fw_eventlog.c`)
+- TPM event log parsing and validation
+- PCR measurement replay
+- Event caching with red-black tree
+- Event export functionality
+- Statistics tracking
+
+### Remote Attestation (`fw_attest.c`)
+- Session-based attestation protocol
+- Challenge-response mechanism
+- AEAD encryption for attestation data
+- PCR quote verification
+- Support for multiple concurrent sessions
+
+### Debug Interface (`fw_debugfs.c`)
+- Event log monitoring
+- Attestation service status
+- Real-time PCR values
+- Event log entries viewer
+- Performance statistics
+
 ### Test Modules
 - `test_fw_common.c`: Tests for basic firmware functionality
 - `test_fw_secure.c`: Tests for secure boot features
-- `test_fw_tpm.c`: Tests for TPM integration (coming soon)
+- `test_fw_tpm.c`: Tests for TPM integration
+- `test_fw_eventlog.c`: Tests for event log functionality
+- `test_fw_attest.c`: Tests for remote attestation
 
 ## TPM Attestation Flow
 
@@ -55,6 +78,19 @@ The TPM integration provides the following security guarantees:
 3. Remote attestation capabilities
 4. Policy-based access control
 5. Protection against rollback attacks
+
+## Monitoring and Debugging
+
+### Event Log Interface
+```bash
+cat /sys/kernel/debug/wifi67/eventlog/status
+cat /sys/kernel/debug/wifi67/eventlog/entries
+```
+
+### Attestation Interface
+```bash
+cat /sys/kernel/debug/wifi67/attest/status
+```
 
 ## Policy Configuration
 
@@ -88,13 +124,13 @@ Common TPM-related issues:
 ✓ Add TPM integration
 ✓ Implement PCR quote verification
 ✓ Add policy digest calculation
+✓ Add event log validation
+✓ Implement remote attestation
+✓ Add debugfs interface
+✓ Add performance monitoring
 
 Remaining TODOs:
-- [ ] Add support for custom PCR measurements
-- [ ] Implement TPM event log validation
-- [ ] Add remote attestation service integration
-- [ ] Enhance TPM failure recovery mechanisms
-- [ ] Add support for TPM NV counter for rollback protection
+- [ ] Add TPM NV counter for rollback protection
 - [ ] Implement TPM-backed firmware encryption
 - [ ] Add support for TPM2 enhanced authorization
 - [ ] Create TPM policy simulator for testing
