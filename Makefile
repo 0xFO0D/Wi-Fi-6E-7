@@ -22,7 +22,9 @@ wifi67-objs := \
     src/diag/hw_diag.o \
     src/power/power_mgmt.o \
     managh_usb&cards_suprtd/firmware/fw_common.o \
-    managh_usb&cards_suprtd/firmware/fw_secure.o
+    managh_usb&cards_suprtd/firmware/fw_secure.o \
+    managh_usb&cards_suprtd/firmware/fw_keys.o \
+    managh_usb&cards_suprtd/firmware/fw_tpm.o
 
 managh_wifi_usb-objs := \
     managh_usb&cards_suprtd/usb/usb_driver.o \
