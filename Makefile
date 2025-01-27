@@ -1,4 +1,6 @@
 obj-m += wifi67.o
+obj-m += managh_wifi_usb.o
+obj-m += managh_wifi_pci.o
 
 wifi67-objs := \
     src/core/main.o \
@@ -17,6 +19,12 @@ wifi67-objs := \
     src/perf/perf_monitor.o \
     src/diag/hw_diag.o \
     src/power/power_mgmt.o
+
+managh_wifi_usb-objs := \
+    managh_usb&cards_suprtd/usb/usb_driver.o
+
+managh_wifi_pci-objs := \
+    managh_usb&cards_suprtd/pci/pci_driver.o
 
 # Test modules
 obj-m += wifi67_test.o
