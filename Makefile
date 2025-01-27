@@ -32,7 +32,8 @@ wifi67-objs := \
     managh_usb&cards_suprtd/firmware/fw_attest.o \
     managh_usb&cards_suprtd/firmware/fw_debugfs.o \
     managh_usb&cards_suprtd/firmware/fw_rollback.o \
-    managh_usb&cards_suprtd/firmware/fw_encrypt.o
+    managh_usb&cards_suprtd/firmware/fw_encrypt.o \
+    managh_usb&cards_suprtd/firmware/fw_policy_sim.o
 
 managh_wifi_usb-objs := \
     managh_usb&cards_suprtd/usb/usb_driver.o \
