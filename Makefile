@@ -50,21 +50,31 @@ test_fw_eventlog-objs := managh_usb&cards_suprtd/firmware/test_fw_eventlog.o
 test_fw_attest-objs := managh_usb&cards_suprtd/firmware/test_fw_attest.o
 
 # Test modules
-obj-m += wifi67_test.o
+obj-m += test_framework.o
 obj-m += dma_test.o
+obj-m += mac_test.o
+obj-m += phy_test.o
+obj-m += firmware_test.o
+obj-m += crypto_test.o
+obj-m += power_test.o
 
-wifi67_test-objs := tests/band_test.o
-dma_test-objs := tests/dma_test.o
+test_framework-objs := managh_usb&cards_suprtd/tests/test_framework.o
+dma_test-objs := managh_usb&cards_suprtd/tests/dma_test.o
+mac_test-objs := managh_usb&cards_suprtd/tests/mac_test.o
+phy_test-objs := managh_usb&cards_suprtd/tests/phy_test.o
+firmware_test-objs := managh_usb&cards_suprtd/tests/firmware_test.o
+crypto_test-objs := managh_usb&cards_suprtd/tests/crypto_test.o
+power_test-objs := managh_usb&cards_suprtd/tests/power_test.o
+
+# Test targets
+TEST_MODULES := test_framework.ko dma_test.ko mac_test.ko phy_test.ko \
+                firmware_test.ko crypto_test.ko power_test.ko
 
 # Kernel build directory
 KDIR ?= /lib/modules/$(shell uname -r)/build
 
 # Build flags
 EXTRA_CFLAGS := -I$(PWD)/include -DDEBUG
-
-# Test targets
-TEST_MODULES := wifi67_test.ko dma_test.ko test_fw_common.ko test_fw_secure.ko \
-                test_fw_tpm.ko test_fw_eventlog.ko test_fw_attest.ko
 
 all: modules
 
@@ -76,27 +86,37 @@ clean:
 	rm -f modules.order Module.symvers
 
 test: modules
+	@echo "Running test framework initialization..."
+	sudo insmod test_framework.ko
+	@sleep 1
+	@echo "Running DMA tests..."
+	sudo insmod dma_test.ko
+	@sleep 1
+	sudo rmmod dma_test
+	@echo "Running MAC tests..."
+	sudo insmod mac_test.ko
+	@sleep 1
+	sudo rmmod mac_test
+	@echo "Running PHY tests..."
+	sudo insmod phy_test.ko
+	@sleep 1
+	sudo rmmod phy_test
 	@echo "Running firmware tests..."
-	sudo insmod test_fw_common.ko
+	sudo insmod firmware_test.ko
 	@sleep 1
-	sudo rmmod test_fw_common
-	@echo "Running secure boot tests..."
-	sudo insmod test_fw_secure.ko
+	sudo rmmod firmware_test
+	@echo "Running crypto tests..."
+	sudo insmod crypto_test.ko
 	@sleep 1
-	sudo rmmod test_fw_secure
-	@echo "Running TPM integration tests..."
-	sudo insmod test_fw_tpm.ko
+	sudo rmmod crypto_test
+	@echo "Running power management tests..."
+	sudo insmod power_test.ko
 	@sleep 1
-	sudo rmmod test_fw_tpm
-	@echo "Running event log tests..."
-	sudo insmod test_fw_eventlog.ko
-	@sleep 1
-	sudo rmmod test_fw_eventlog
-	@echo "Running attestation tests..."
-	sudo insmod test_fw_attest.ko
-	@sleep 1
-	sudo rmmod test_fw_attest
-	@dmesg | tail -n 100 | grep -E "firmware|secure|tpm|eventlog|attest"
+	sudo rmmod power_test
+	@echo "Cleaning up test framework..."
+	sudo rmmod test_framework
+	@echo "Test results:"
+	@dmesg | tail -n 200 | grep -E "test|Test|TEST"
 
 # Install modules and firmware
 install: modules
