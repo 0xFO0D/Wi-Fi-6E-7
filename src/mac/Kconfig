@@ -1,0 +1,62 @@
+menu "WiFi 7 MAC Layer Configuration"
+
+config WIFI7_MAC
+    tristate "WiFi 7 MAC Layer Support"
+    depends on WLAN && WIRELESS
+    help
+      This option enables support for WiFi 7 MAC layer features including
+      Multi-Link Operation (MLO), enhanced QoS, and power management.
+      
+      If unsure, say N.
+
+if WIFI7_MAC
+
+config WIFI7_MAC_MLO
+    bool "Multi-Link Operation Support"
+    default y
+    help
+      Enable support for WiFi 7 Multi-Link Operation (MLO) which allows
+      simultaneous operation on multiple links for improved performance
+      and reliability.
+
+config WIFI7_MAC_QOS
+    bool "Enhanced QoS Support"
+    default y
+    help
+      Enable support for WiFi 7 enhanced QoS features including
+      Multi-TID aggregation and improved traffic scheduling.
+
+config WIFI7_MAC_POWER
+    bool "Advanced Power Management"
+    default y
+    help
+      Enable support for WiFi 7 advanced power management features
+      including per-link power states and dynamic duty cycling.
+
+config WIFI7_MAC_DEBUG
+    bool "Debug Support"
+    default n
+    help
+      Enable debug support for WiFi 7 MAC layer including detailed
+      logging and debugfs interface.
+
+config WIFI7_MAC_MAX_LINKS
+    int "Maximum Number of MLO Links"
+    range 1 8
+    default 4
+    help
+      Maximum number of simultaneous links supported for Multi-Link
+      Operation. Each link requires additional memory and processing
+      resources.
+
+config WIFI7_MAC_MAX_AMPDU
+    int "Maximum A-MPDU Length"
+    range 8192 262144
+    default 65536
+    help
+      Maximum Aggregated MPDU (A-MPDU) length in bytes. Larger values
+      can improve throughput but require more memory.
+
+endif # WIFI7_MAC
+
+endmenu 
