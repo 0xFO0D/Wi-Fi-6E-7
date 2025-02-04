@@ -38,10 +38,10 @@
  * Queue and buffer management limits
  * Sized to handle typical traffic patterns while preventing buffer bloat
  */
-#define WIFI7_MAX_QUEUES       16
-#define WIFI7_MAX_QUEUE_DEPTH  512
-#define WIFI7_MIN_QUEUE_DEPTH  32
-#define WIFI7_MAX_AMPDU_LEN    256
+#define WIFI7_MAX_QUEUES       32
+#define WIFI7_MAX_QUEUE_DEPTH  1024
+#define WIFI7_MIN_QUEUE_DEPTH  64
+#define WIFI7_MAX_AMPDU_LEN    1024
 #define WIFI7_MAX_AMPDU_TIDS   8
 
 /*
@@ -53,7 +53,8 @@
 #define WIFI7_STEER_LATENCY    2
 #define WIFI7_STEER_AIRTIME    3
 #define WIFI7_STEER_THROUGHPUT 4
-#define WIFI7_STEER_CUSTOM     5
+#define WIFI7_STEER_ML         5
+#define WIFI7_STEER_CUSTOM     6
 
 /*
  * QoS capability flags
@@ -67,6 +68,10 @@
 #define WIFI7_QOS_FLAG_LOW_LAT BIT(5)  /* Optimize for low latency */
 #define WIFI7_QOS_FLAG_HIGH_TP BIT(6)  /* Optimize for throughput */
 #define WIFI7_QOS_FLAG_POWER   BIT(7)  /* Power save mode */
+#define WIFI7_QOS_FLAG_ML      BIT(8)  /* ML-based traffic prediction */
+#define WIFI7_QOS_FLAG_SHAPE   BIT(9)  /* Shape-based traffic shaping */
+#define WIFI7_QOS_FLAG_DRR     BIT(10) /* DRR-based traffic shaping */
+#define WIFI7_QOS_FLAG_PREDICT BIT(11) /* ML-based traffic prediction */
 
 /* Traffic classification */
 struct wifi7_tid_config {
@@ -186,32 +191,27 @@ struct wifi7_qos {
     bool debug_enabled;
 };
 
-/* Function prototypes */
+/* Forward declarations */
+struct wifi7_dev;
+struct wifi7_qos;
+
+/* Public API */
 int wifi7_qos_init(struct wifi7_dev *dev);
 void wifi7_qos_deinit(struct wifi7_dev *dev);
 
-int wifi7_qos_setup_tid(struct wifi7_dev *dev, struct wifi7_tid_config *config);
-int wifi7_qos_enable_mtid(struct wifi7_dev *dev, u8 max_tids, u32 timeout_us);
-int wifi7_qos_set_link_mask(struct wifi7_dev *dev, u8 tid, u8 link_mask);
+int wifi7_qos_start(struct wifi7_dev *dev);
+void wifi7_qos_stop(struct wifi7_dev *dev);
 
-int wifi7_qos_enqueue(struct wifi7_dev *dev, struct sk_buff *skb, u8 tid);
+int wifi7_qos_set_config(struct wifi7_dev *dev, void *cfg, size_t len);
+int wifi7_qos_get_config(struct wifi7_dev *dev, void *cfg, size_t len);
+
+int wifi7_qos_enqueue(struct wifi7_dev *dev, struct sk_buff *skb);
 struct sk_buff *wifi7_qos_dequeue(struct wifi7_dev *dev, u8 link_id);
-void wifi7_qos_flush(struct wifi7_dev *dev, u8 tid);
 
-int wifi7_qos_set_steering(struct wifi7_dev *dev, 
-                          struct wifi7_steer_policy *policy);
-int wifi7_qos_get_stats(struct wifi7_dev *dev, u8 link_id,
-                        struct wifi7_queue_stats *stats);
+int wifi7_qos_get_stats(struct wifi7_dev *dev, void *stats, size_t len);
+int wifi7_qos_clear_stats(struct wifi7_dev *dev);
 
-/* TODO: Implement ML-based traffic prediction */
-int wifi7_qos_predict_load(struct wifi7_dev *dev, u8 link_id,
-                          u32 *predicted_load);
-
-/* TODO: Add support for additional QoS metrics */
-int wifi7_qos_get_metrics(struct wifi7_dev *dev, u8 link_id,
-                         void *metrics_data);
-
-/* TODO: Optimize queue depth management */
-int wifi7_qos_optimize_queues(struct wifi7_dev *dev);
+int wifi7_qos_set_power_mode(struct wifi7_dev *dev, bool enable);
+int wifi7_qos_set_link_mask(struct wifi7_dev *dev, u32 mask);
 
 #endif /* __WIFI7_QOS_H */ 
