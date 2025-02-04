@@ -178,9 +178,11 @@ out_unlock:
 }
 EXPORT_SYMBOL_GPL(wifi7_mac_link_setup);
 
+/* FIXME: Current link teardown has race conditions */
 int wifi7_mac_link_teardown(struct wifi7_mac_dev *dev, u8 link_id)
 {
     struct wifi7_link_state *link;
+    unsigned long flags;
     int ret = 0;
 
     if (!dev || link_id >= max_links)
@@ -188,18 +190,26 @@ int wifi7_mac_link_teardown(struct wifi7_mac_dev *dev, u8 link_id)
 
     link = &dev->links[link_id];
 
-    spin_lock_bh(&link->lock);
+    /* Use spin_lock_irqsave to prevent races with interrupt context */
+    spin_lock_irqsave(&link->lock, flags);
+    
     if (!link->enabled) {
         ret = -EINVAL;
         goto out_unlock;
     }
 
+    /* Prevent new transmissions */
     link->mlo_state = MLO_STATE_TEARDOWN;
+    
+    /* Flush pending work - this needs testing */
+    if (dev->mlo_wq)
+        flush_workqueue(dev->mlo_wq);
 
-    /* Call hardware teardown */
+    /* TODO: Add timeout for hardware teardown */
     if (dev->ops && dev->ops->link_teardown) {
         ret = dev->ops->link_teardown(dev, link_id);
         if (ret) {
+            /* XXX: Should we retry or just force teardown? */
             link->mlo_state = MLO_STATE_ERROR;
             goto out_unlock;
         }
@@ -209,11 +219,13 @@ int wifi7_mac_link_teardown(struct wifi7_mac_dev *dev, u8 link_id)
     atomic_dec(&dev->active_links);
     link->mlo_state = MLO_STATE_DISABLED;
 
+    /* Clear statistics - maybe we should keep them for debugging? */
+    memset(&link->metrics, 0, sizeof(link->metrics));
+
 out_unlock:
-    spin_unlock_bh(&link->lock);
+    spin_unlock_irqrestore(&link->lock, flags);
     return ret;
 }
-EXPORT_SYMBOL_GPL(wifi7_mac_link_teardown);
 
 /* Frame transmission and reception */
 int wifi7_mac_tx_frame(struct wifi7_mac_dev *dev, struct sk_buff *skb, u8 link_id)
@@ -282,18 +294,25 @@ out_unlock:
 }
 EXPORT_SYMBOL_GPL(wifi7_mac_rx_frame);
 
-/* Power management */
+/* Power management needs serious optimization */
 int wifi7_mac_set_power_save(struct wifi7_mac_dev *dev, u8 link_id, bool enable)
 {
     struct wifi7_link_state *link;
+    unsigned long flags;
     int ret = 0;
+    
+    /* FIXME: Power transitions are too slow */
+    static DEFINE_MUTEX(power_mutex);
 
     if (!dev || link_id >= max_links)
         return -EINVAL;
 
     link = &dev->links[link_id];
 
-    spin_lock_bh(&link->lock);
+    /* Serialize power state changes */
+    mutex_lock(&power_mutex);
+    spin_lock_irqsave(&link->lock, flags);
+
     if (!link->enabled) {
         ret = -EINVAL;
         goto out_unlock;
@@ -302,17 +321,49 @@ int wifi7_mac_set_power_save(struct wifi7_mac_dev *dev, u8 link_id, bool enable)
     if (link->power_save == enable)
         goto out_unlock;
 
-    /* Call hardware power save */
+    /* TODO: Add proper power state tracking */
+    if (enable) {
+        /* Entering power save */
+        if (atomic_read(&dev->power_state) == 0) {
+            /* First link entering power save */
+            /* XXX: This delay is a hack, need proper power sequencing */
+            usleep_range(1000, 2000);
+        }
+        atomic_inc(&dev->power_state);
+    } else {
+        /* Exiting power save */
+        if (atomic_read(&dev->power_state) == 1) {
+            /* Last link exiting power save */
+            /* XXX: Another hack, fix this */
+            usleep_range(1000, 2000);
+        }
+        atomic_dec(&dev->power_state);
+    }
+
+    /* Call hardware power save - needs timeout */
     if (dev->ops && dev->ops->set_power_state) {
         ret = dev->ops->set_power_state(dev, link_id, enable);
-        if (ret)
+        if (ret) {
+            /* Failed to change power state - rollback */
+            if (enable)
+                atomic_dec(&dev->power_state);
+            else
+                atomic_inc(&dev->power_state);
             goto out_unlock;
+        }
     }
 
     link->power_save = enable;
+    
+    /* Update power statistics */
+    if (enable)
+        link->sleep_duration = jiffies;  /* Start sleep timer */
+    else if (link->sleep_duration)
+        link->awake_duration = jiffies_to_msecs(jiffies - link->sleep_duration);
 
 out_unlock:
-    spin_unlock_bh(&link->lock);
+    spin_unlock_irqrestore(&link->lock, flags);
+    mutex_unlock(&power_mutex);
     return ret;
 }
 EXPORT_SYMBOL_GPL(wifi7_mac_set_power_save);
