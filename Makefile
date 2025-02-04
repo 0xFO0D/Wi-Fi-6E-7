@@ -75,6 +75,39 @@ KDIR ?= /lib/modules/$(shell uname -r)/build
 
 # Build flags
 EXTRA_CFLAGS := -I$(PWD)/include -DDEBUG
+EXTRA_CFLAGS += -I$(src)/include
+
+obj-$(CONFIG_WIFI7) += wifi7.o
+
+wifi7-y := src/core/wifi7_core.o
+wifi7-y += src/mac/wifi7_mac.o
+wifi7-y += src/mac/wifi7_mac_debugfs.o
+wifi7-y += src/mac/wifi7_mlo.o
+wifi7-y += src/phy/wifi7_phy.o
+wifi7-y += src/phy/wifi7_spectrum.o
+wifi7-y += src/phy/wifi7_rate.o
+wifi7-y += src/phy/wifi7_beamforming.o
+wifi7-y += src/hal/wifi7_rf.o
+wifi7-y += src/regulatory/wifi7_reg.o
+
+ccflags-y := -DDEBUG -g -Wall -Werror
+ldflags-y := -T$(src)/wifi7.lds
+
+# Optional features
+wifi7-$(CONFIG_WIFI7_MLO) += src/mac/wifi7_mac_mlo.o
+wifi7-$(CONFIG_WIFI7_QOS) += src/mac/wifi7_mac_qos.o
+wifi7-$(CONFIG_WIFI7_POWER) += src/mac/wifi7_mac_power.o
+wifi7-$(CONFIG_WIFI7_DEBUG) += src/debug/wifi7_debug.o
+
+# Hardware support
+wifi7-$(CONFIG_WIFI7_PCI) += src/pci/wifi7_pci.o
+wifi7-$(CONFIG_WIFI7_USB) += src/usb/wifi7_usb.o
+
+# Build options
+KBUILD_CFLAGS += -O2
+KBUILD_CFLAGS += -fno-strict-aliasing
+KBUILD_CFLAGS += -fno-common
+KBUILD_CFLAGS += -pipe
 
 all: modules
 
