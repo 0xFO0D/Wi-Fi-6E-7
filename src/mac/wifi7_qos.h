@@ -1,3 +1,11 @@
+/*
+ * WiFi 7 QoS Management Header
+ * Copyright (c) 2024 Fayssal Chokri <fayssalchokri@gmail.com>
+ *
+ * Defines the interface and data structures for WiFi 7 QoS management,
+ * including traffic classification, queue management, and MLO support.
+ */
+
 #ifndef __WIFI7_QOS_H
 #define __WIFI7_QOS_H
 
@@ -6,27 +14,40 @@
 #include <linux/ieee80211.h>
 #include "../core/wifi7_core.h"
 
-/* QoS Access Categories */
+/*
+ * Access Categories in order of increasing priority
+ * Follows 802.11e/802.11ax QoS specifications
+ */
 #define WIFI7_AC_BK     0  /* Background */
 #define WIFI7_AC_BE     1  /* Best Effort */
 #define WIFI7_AC_VI     2  /* Video */
 #define WIFI7_AC_VO     3  /* Voice */
 #define WIFI7_NUM_ACS   4
 
-/* TID definitions */
+/*
+ * Traffic Identifier (TID) definitions
+ * TIDs 0-7 map to user priorities
+ * TID 8 reserved for management frames
+ */
 #define WIFI7_TID_MAX   7
 #define WIFI7_TID_MASK  0x7
 #define WIFI7_MGMT_TID  8
 #define WIFI7_NUM_TIDS  9
 
-/* Queue limits */
+/*
+ * Queue and buffer management limits
+ * Sized to handle typical traffic patterns while preventing buffer bloat
+ */
 #define WIFI7_MAX_QUEUES       16
 #define WIFI7_MAX_QUEUE_DEPTH  512
 #define WIFI7_MIN_QUEUE_DEPTH  32
 #define WIFI7_MAX_AMPDU_LEN    256
 #define WIFI7_MAX_AMPDU_TIDS   8
 
-/* Traffic steering modes */
+/*
+ * Traffic steering modes
+ * Different policies for MLO link selection
+ */
 #define WIFI7_STEER_NONE       0
 #define WIFI7_STEER_LOAD       1
 #define WIFI7_STEER_LATENCY    2
@@ -34,15 +55,18 @@
 #define WIFI7_STEER_THROUGHPUT 4
 #define WIFI7_STEER_CUSTOM     5
 
-/* QoS flags */
-#define WIFI7_QOS_FLAG_AMPDU   BIT(0)
-#define WIFI7_QOS_FLAG_AMSDU   BIT(1)
-#define WIFI7_QOS_FLAG_BLOCK   BIT(2)
-#define WIFI7_QOS_FLAG_NOACK   BIT(3)
-#define WIFI7_QOS_FLAG_BURST   BIT(4)
-#define WIFI7_QOS_FLAG_LOW_LAT BIT(5)
-#define WIFI7_QOS_FLAG_HIGH_TP BIT(6)
-#define WIFI7_QOS_FLAG_POWER   BIT(7)
+/*
+ * QoS capability flags
+ * Controls features like aggregation and ACK policy
+ */
+#define WIFI7_QOS_FLAG_AMPDU   BIT(0)  /* Enable AMPDU aggregation */
+#define WIFI7_QOS_FLAG_AMSDU   BIT(1)  /* Enable AMSDU aggregation */
+#define WIFI7_QOS_FLAG_BLOCK   BIT(2)  /* Use block acknowledgment */
+#define WIFI7_QOS_FLAG_NOACK   BIT(3)  /* No acknowledgment required */
+#define WIFI7_QOS_FLAG_BURST   BIT(4)  /* Allow frame bursting */
+#define WIFI7_QOS_FLAG_LOW_LAT BIT(5)  /* Optimize for low latency */
+#define WIFI7_QOS_FLAG_HIGH_TP BIT(6)  /* Optimize for throughput */
+#define WIFI7_QOS_FLAG_POWER   BIT(7)  /* Power save mode */
 
 /* Traffic classification */
 struct wifi7_tid_config {

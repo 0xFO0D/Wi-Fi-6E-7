@@ -1,3 +1,15 @@
+/* 
+ * WiFi 7 QoS Management
+ * Copyright (c) 2024 Fayssal Chokri <fayssalchokri@gmail.com>
+ *
+ * This module implements Quality of Service (QoS) and traffic management
+ * for the WiFi 7 driver, including:
+ * - Traffic classification and prioritization
+ * - Multi-TID aggregation
+ * - Dynamic traffic steering
+ * - Queue management and statistics
+ */
+
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -8,7 +20,14 @@
 #include "wifi7_qos.h"
 #include "wifi7_mac.h"
 
-/* Default TID configurations */
+/* 
+ * Default TID configurations for different traffic types.
+ * These settings are based on typical requirements for each traffic class:
+ * - Background (BK): Bulk transfers, low priority
+ * - Best Effort (BE): Regular data traffic
+ * - Video (VI): Streaming media, latency sensitive
+ * - Voice (VO): Real-time audio, highest priority
+ */
 static const struct wifi7_tid_config default_tid_configs[] = {
     /* Background traffic */
     [0] = {
@@ -117,12 +136,16 @@ static const struct wifi7_tid_config default_tid_configs[] = {
     },
 };
 
-/* Forward declarations */
+/* Forward declarations for internal functions */
 static void wifi7_qos_stats_work(struct work_struct *work);
 static int wifi7_qos_update_link_stats(struct wifi7_qos *qos, u8 link_id);
 static void wifi7_qos_apply_steering(struct wifi7_qos *qos, struct sk_buff *skb, u8 tid);
 
-/* Helper functions */
+/*
+ * Helper function to extract TID from an SKB
+ * For QoS data frames, uses the priority field
+ * For management frames, uses the special management TID
+ */
 static inline u8 skb_get_tid(struct sk_buff *skb)
 {
     struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
@@ -130,17 +153,29 @@ static inline u8 skb_get_tid(struct sk_buff *skb)
            skb->priority & WIFI7_TID_MASK : WIFI7_MGMT_TID;
 }
 
+/*
+ * Maps TID to Access Category
+ * Used for priority-based scheduling decisions
+ */
 static inline u8 tid_to_ac(struct wifi7_qos *qos, u8 tid)
 {
     return qos->tids[tid].ac;
 }
 
+/*
+ * Calculates queue ID based on TID and link
+ * Each TID has separate queues per link for MLO support
+ */
 static inline u32 get_queue_id(struct wifi7_qos *qos, u8 tid, u8 link_id)
 {
     return qos->queue_mapping[tid] + link_id;
 }
 
-/* Queue management functions */
+/*
+ * Queue management functions
+ * Handles queue limits and buffer management
+ * Maintains statistics for monitoring and optimization
+ */
 static int wifi7_qos_check_queue_limits(struct wifi7_qos *qos,
                                       u8 tid, u8 link_id)
 {
@@ -166,6 +201,11 @@ static int wifi7_qos_check_queue_limits(struct wifi7_qos *qos,
     return ret;
 }
 
+/*
+ * Updates per-queue and per-link statistics
+ * Tracks packet counts, bytes, and latency metrics
+ * Used for monitoring QoS performance and steering decisions
+ */
 static void wifi7_qos_update_stats(struct wifi7_qos *qos,
                                  u8 tid, u8 link_id,
                                  struct sk_buff *skb,
@@ -200,7 +240,14 @@ static void wifi7_qos_update_stats(struct wifi7_qos *qos,
     spin_unlock_irqrestore(&link->lock, flags);
 }
 
-/* Traffic steering */
+/*
+ * Traffic steering implementation
+ * Selects best link based on configured policy:
+ * - Load balancing
+ * - Latency optimization
+ * - Airtime fairness
+ * - Throughput maximization
+ */
 static void wifi7_qos_apply_steering(struct wifi7_qos *qos,
                                    struct sk_buff *skb,
                                    u8 tid)
@@ -253,7 +300,13 @@ static void wifi7_qos_apply_steering(struct wifi7_qos *qos,
     tid_cfg->link_mask = BIT(best_link);
 }
 
-/* Multi-TID aggregation */
+/*
+ * Multi-TID aggregation helper
+ * Checks if a packet can be aggregated based on:
+ * - Current aggregation state
+ * - TID limits
+ * - Buffer availability
+ */
 static bool wifi7_qos_can_aggregate(struct wifi7_qos *qos,
                                   struct sk_buff *skb,
                                   u8 tid, u8 link_id)
@@ -281,6 +334,12 @@ static bool wifi7_qos_can_aggregate(struct wifi7_qos *qos,
 }
 
 /* Public API Implementation */
+
+/*
+ * Initializes QoS subsystem
+ * Sets up queues, locks, and default configurations
+ * Starts statistics collection
+ */
 int wifi7_qos_init(struct wifi7_dev *dev)
 {
     struct wifi7_qos *qos;
@@ -570,7 +629,9 @@ static int wifi7_qos_update_link_stats(struct wifi7_qos *qos, u8 link_id)
     return 0;
 }
 
-/* Module initialization */
+/*
+ * Module initialization and cleanup
+ */
 static int __init wifi7_qos_init_module(void)
 {
     pr_info("WiFi 7 QoS Management initialized\n");
