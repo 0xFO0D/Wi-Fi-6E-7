@@ -23,7 +23,14 @@ wifi67-objs := \
     src/debug/debug.o \
     src/perf/perf_monitor.o \
     src/diag/hw_diag.o \
+    src/power/wifi7_power.o \
     src/power/power_mgmt.o \
+    src/power/power_stats.o \
+    src/power/power_debug.o \
+    src/power/power_thermal.o \
+    src/power/power_profile.o \
+    src/power/power_domain.o \
+    src/power/power_dvfs.o \
     managh_usb&cards_suprtd/firmware/fw_common.o \
     managh_usb&cards_suprtd/firmware/fw_secure.o \
     managh_usb&cards_suprtd/firmware/fw_keys.o \
@@ -89,6 +96,14 @@ wifi7-y += src/phy/wifi7_rate.o
 wifi7-y += src/phy/wifi7_beamforming.o
 wifi7-y += src/hal/wifi7_rf.o
 wifi7-y += src/regulatory/wifi7_reg.o
+wifi7-y += src/power/wifi7_power.o
+wifi7-y += src/power/power_mgmt.o
+wifi7-y += src/power/power_stats.o
+wifi7-y += src/power/power_debug.o
+wifi7-y += src/power/power_thermal.o
+wifi7-y += src/power/power_profile.o
+wifi7-y += src/power/power_domain.o
+wifi7-y += src/power/power_dvfs.o
 
 ccflags-y := -DDEBUG -g -Wall -Werror
 ldflags-y := -T$(src)/wifi7.lds
