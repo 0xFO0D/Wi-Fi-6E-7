@@ -1,6 +1,12 @@
-/* SPDX-License-Identifier: MIT */
 /*
+ * WiFi 7 MAC Layer Implementation
  * Copyright (c) 2024 Fayssal Chokri <fayssalchokri@gmail.com>
+ *
+ * Implements core MAC functionality for WiFi 7 including:
+ * - Multi-Link Operation (MLO)
+ * - Enhanced frame aggregation
+ * - Advanced block acknowledgment
+ * - Dynamic bandwidth management
  */
 
 #ifndef __WIFI7_MAC_H
@@ -12,6 +18,7 @@
 #include <linux/spinlock.h>
 #include <linux/workqueue.h>
 #include <linux/completion.h>
+#include <linux/etherdevice.h>
 #include "../core/wifi7_core.h"
 
 /* WiFi 7 MAC capabilities */
