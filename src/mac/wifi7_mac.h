@@ -12,6 +12,7 @@
 #include <linux/spinlock.h>
 #include <linux/workqueue.h>
 #include <linux/completion.h>
+#include "../core/wifi7_core.h"
 
 /* WiFi 7 MAC capabilities */
 #define WIFI7_MAC_CAP_4K_MPDU          BIT(0)
@@ -144,6 +145,10 @@ struct wifi7_mac_ops {
     /* Hardware configuration */
     int (*set_hw_params)(struct wifi7_mac_dev *dev, u8 link_id,
                         u32 freq, u32 bw, u8 nss, u8 mcs);
+
+    int (*setup_link)(struct wifi7_dev *dev, u8 link_id, u16 freq);
+    int (*remove_link)(struct wifi7_dev *dev, u8 link_id);
+    int (*switch_link)(struct wifi7_dev *dev, u8 from_link, u8 to_link);
 };
 
 /* Function prototypes */
@@ -167,5 +172,9 @@ int wifi7_mac_set_multi_tid(struct wifi7_mac_dev *dev, struct wifi7_multi_tid_co
 void wifi7_mac_get_stats(struct wifi7_mac_dev *dev, struct wifi7_mac_stats *stats);
 int wifi7_mac_debugfs_init(struct wifi7_mac_dev *dev);
 void wifi7_mac_debugfs_remove(struct wifi7_mac_dev *dev);
+
+int wifi7_mac_setup_link(struct wifi7_dev *dev, u8 link_id, u16 freq);
+int wifi7_mac_remove_link(struct wifi7_dev *dev, u8 link_id);
+int wifi7_mac_switch_link(struct wifi7_dev *dev, u8 from_link, u8 to_link);
 
 #endif /* __WIFI7_MAC_H */ 

@@ -383,6 +383,66 @@ int wifi7_mac_set_multi_tid(struct wifi7_mac_dev *dev,
 }
 EXPORT_SYMBOL_GPL(wifi7_mac_set_multi_tid);
 
+int wifi7_mac_setup_link(struct wifi7_dev *dev, u8 link_id, u16 freq)
+{
+    struct wifi7_mac_dev *mac = dev->mac;
+    int ret = 0;
+
+    if (!mac || !mac->ops || !mac->ops->setup_link)
+        return -ENOTSUPP;
+
+    mutex_lock(&mac->conf_mutex);
+    ret = mac->ops->setup_link(dev, link_id, freq);
+    if (!ret) {
+        set_bit(link_id, mac->active_links);
+        mac->n_active_links++;
+    }
+    mutex_unlock(&mac->conf_mutex);
+
+    return ret;
+}
+
+int wifi7_mac_remove_link(struct wifi7_dev *dev, u8 link_id)
+{
+    struct wifi7_mac_dev *mac = dev->mac;
+    int ret = 0;
+
+    if (!mac || !mac->ops || !mac->ops->remove_link)
+        return -ENOTSUPP;
+
+    mutex_lock(&mac->conf_mutex);
+    ret = mac->ops->remove_link(dev, link_id);
+    if (!ret) {
+        clear_bit(link_id, mac->active_links);
+        mac->n_active_links--;
+    }
+    mutex_unlock(&mac->conf_mutex);
+
+    return ret;
+}
+
+int wifi7_mac_switch_link(struct wifi7_dev *dev, u8 from_link, u8 to_link)
+{
+    struct wifi7_mac_dev *mac = dev->mac;
+    int ret = 0;
+
+    if (!mac || !mac->ops || !mac->ops->switch_link)
+        return -ENOTSUPP;
+
+    if (!test_bit(from_link, mac->active_links))
+        return -EINVAL;
+
+    mutex_lock(&mac->conf_mutex);
+    ret = mac->ops->switch_link(dev, from_link, to_link);
+    if (!ret) {
+        clear_bit(from_link, mac->active_links);
+        set_bit(to_link, mac->active_links);
+    }
+    mutex_unlock(&mac->conf_mutex);
+
+    return ret;
+}
+
 /* Module initialization */
 static int __init wifi7_mac_init(void)
 {

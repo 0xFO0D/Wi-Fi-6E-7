@@ -2,8 +2,12 @@
 
 ccflags-y := -I$(src)/../../include
 
-obj-$(CONFIG_WIFI7_MAC) += wifi7_mac.o
-wifi7_mac-objs := wifi7_mac_core.o wifi7_mac_debugfs.o
+obj-$(CONFIG_WIFI7) += wifi7_mac.o
+obj-$(CONFIG_WIFI7) += wifi7_mac_debugfs.o
+obj-$(CONFIG_WIFI7) += wifi7_mac_perf.o
+obj-$(CONFIG_WIFI7) += wifi7_mlo.o
+obj-$(CONFIG_WIFI7) += mac_core.o
+obj-$(CONFIG_WIFI7) += rate_control.o
 
 # Optional features
 obj-$(CONFIG_WIFI7_MAC_MLO) += wifi7_mac_mlo.o
