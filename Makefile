@@ -93,26 +93,24 @@ KDIR ?= /lib/modules/$(shell uname -r)/build
 EXTRA_CFLAGS := -I$(PWD)/include -DDEBUG
 EXTRA_CFLAGS += -I$(src)/include
 
-obj-$(CONFIG_WIFI7) += wifi7.o
-
-wifi7-y := src/core/wifi7_core.o
-wifi7-y += src/mac/wifi7_mac.o
-wifi7-y += src/mac/wifi7_mac_debugfs.o
-wifi7-y += src/mac/wifi7_mlo.o
-wifi7-y += src/phy/wifi7_phy.o
-wifi7-y += src/phy/wifi7_spectrum.o
-wifi7-y += src/phy/wifi7_rate.o
-wifi7-y += src/phy/wifi7_beamforming.o
-wifi7-y += src/hal/wifi7_rf.o
-wifi7-y += src/regulatory/wifi7_reg.o
-wifi7-y += src/power/wifi7_power.o
-wifi7-y += src/power/power_mgmt.o
-wifi7-y += src/power/power_stats.o
-wifi7-y += src/power/power_debug.o
-wifi7-y += src/power/power_thermal.o
-wifi7-y += src/power/power_profile.o
-wifi7-y += src/power/power_domain.o
-wifi7-y += src/power/power_dvfs.o
+obj-$(CONFIG_WIFI7) += \
+    src/core/wifi7_core.o \
+    src/mac/wifi7_qos.o \
+    src/mac/wifi7_ba.o \
+    src/mac/wifi7_aggregation.o \
+    src/regulatory/wifi7_afc.o \
+    src/phy/phy_core.o \
+    src/dma/dma_core.o \
+    src/hal/wifi7_rf.o \
+    src/regulatory/wifi7_reg.o \
+    src/power/wifi7_power.o \
+    src/power/power_mgmt.o \
+    src/power/power_stats.o \
+    src/power/power_debug.o \
+    src/power/power_thermal.o \
+    src/power/power_profile.o \
+    src/power/power_domain.o \
+    src/power/power_dvfs.o
 
 ccflags-y := -DDEBUG -g -Wall -Werror
 ldflags-y := -T$(src)/wifi7.lds
