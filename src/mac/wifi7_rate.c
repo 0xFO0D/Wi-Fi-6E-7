@@ -1,5 +1,5 @@
 /*
- * WiFi 7 Rate Control
+ * WiFi 7 Rate Control and Adaptation
  * Copyright (c) 2024 Fayssal Chokri <fayssalchokri@gmail.com>
  */
 
@@ -10,447 +10,615 @@
 #include <linux/ieee80211.h>
 #include <linux/etherdevice.h>
 #include <linux/random.h>
+#include <linux/crc32.h>
+#include <linux/completion.h>
+#include <linux/ktime.h>
 #include <linux/math64.h>
-#include <linux/jiffies.h>
 #include "wifi7_rate.h"
 #include "wifi7_mac.h"
+#include "../hal/wifi7_rf.h"
 
-/* Rate table initialization */
-static void wifi7_rate_init_table(struct wifi7_rate_table *table)
+/* Device state */
+struct wifi7_rate_dev {
+    struct wifi7_dev *dev;           /* Core device structure */
+    struct wifi7_rate_config config; /* Rate configuration */
+    struct wifi7_rate_stats stats;   /* Rate statistics */
+    struct dentry *debugfs_dir;      /* debugfs directory */
+    spinlock_t lock;                 /* Device lock */
+    bool initialized;                /* Initialization flag */
+    struct {
+        struct wifi7_rate_table table;  /* Rate table */
+        spinlock_t lock;                /* Table lock */
+    } rate_table;
+    struct {
+        struct delayed_work update_work; /* Rate update work */
+        struct delayed_work stats_work;  /* Stats collection work */
+        struct completion update_done;   /* Update completion */
+    } workers;
+    struct {
+        u32 *history;                   /* Rate history buffer */
+        u32 history_size;               /* History size */
+        u32 history_index;              /* Current index */
+        spinlock_t lock;                /* History lock */
+    } history;
+    struct {
+        void *model;                    /* ML model */
+        u32 model_size;                 /* Model size */
+        spinlock_t lock;                /* Model lock */
+    } ml;
+};
+
+/* Global device context */
+static struct wifi7_rate_dev *rate_dev;
+
+/* Helper functions */
+static inline bool is_valid_mcs(u8 mcs)
 {
-    int i, j, k, l, idx = 0;
-    
-    /* Initialize masks */
-    memset(table->mcs_mask, 0xFF, sizeof(table->mcs_mask));
-    memset(table->nss_mask, 0xFF, sizeof(table->nss_mask));
-    memset(table->bw_mask, 0xFF, sizeof(table->bw_mask));
-    memset(table->gi_mask, 0xFF, sizeof(table->gi_mask));
-    table->flags_mask = 0xFFFFFFFF;
-    
-    /* Generate rate table */
-    for (i = 0; i < WIFI7_RATE_MAX_MCS; i++) {
-        for (j = 0; j < WIFI7_RATE_MAX_NSS; j++) {
-            for (k = 0; k < WIFI7_RATE_MAX_BW; k++) {
-                for (l = 0; l < WIFI7_RATE_MAX_GI; l++) {
-                    struct wifi7_rate_info *rate = &table->rates[idx];
-                    
-                    rate->mcs = i;
-                    rate->nss = j + 1;
-                    rate->bw = k;
-                    rate->gi = l;
-                    rate->flags = WIFI7_RATE_FLAG_EHT;
-                    
-                    /* Calculate bitrate */
-                    u32 base_rate = 6500; /* Base rate in 100 kbps */
-                    u32 mcs_factor = 1 << i;
-                    u32 nss_factor = j + 1;
-                    u32 bw_factor = 1 << k;
-                    
-                    rate->bitrate = base_rate * mcs_factor * nss_factor *
-                                  bw_factor;
-                                  
-                    /* Set duration based on guard interval */
-                    switch (l) {
-                    case 0: /* 0.8 us */
-                        rate->duration = 800;
-                        break;
-                    case 1: /* 1.6 us */
-                        rate->duration = 1600;
-                        break;
-                    case 2: /* 3.2 us */
-                        rate->duration = 3200;
-                        break;
-                    }
-                    
-                    /* Set retry count based on MCS */
-                    rate->retry_count = WIFI7_RATE_MAX_RETRIES - (i / 2);
-                    
-                    /* Set power level */
-                    rate->power_level = 100 - (i * 5);
-                    
-                    idx++;
-                }
-            }
-        }
+    return mcs <= WIFI7_RATE_MAX_MCS;
+}
+
+static inline bool is_valid_nss(u8 nss)
+{
+    return nss > 0 && nss <= WIFI7_RATE_MAX_NSS;
+}
+
+static inline bool is_valid_bw(u8 bw)
+{
+    return bw == 20 || bw == 40 || bw == 80 || bw == 160 || bw == 320;
+}
+
+static inline bool is_valid_gi(u8 gi)
+{
+    return gi <= WIFI7_RATE_MAX_GI;
+}
+
+/* Rate table management */
+static void init_rate_table(struct wifi7_rate_table *table)
+{
+    int i;
+
+    table->max_mcs = WIFI7_RATE_MAX_MCS;
+    table->max_nss = WIFI7_RATE_MAX_NSS;
+    table->max_bw = WIFI7_RATE_MAX_BW;
+    table->max_gi = WIFI7_RATE_MAX_GI;
+    table->capabilities = WIFI7_RATE_CAP_MCS_15 |
+                         WIFI7_RATE_CAP_4K_QAM |
+                         WIFI7_RATE_CAP_OFDMA |
+                         WIFI7_RATE_CAP_MU_MIMO |
+                         WIFI7_RATE_CAP_320MHZ |
+                         WIFI7_RATE_CAP_16_SS |
+                         WIFI7_RATE_CAP_EHT |
+                         WIFI7_RATE_CAP_MLO |
+                         WIFI7_RATE_CAP_DYNAMIC;
+    table->eht_supported = true;
+    table->mlo_supported = true;
+
+    /* Initialize rate entries */
+    for (i = 0; i <= WIFI7_RATE_MAX_MCS; i++) {
+        struct wifi7_rate_entry *entry = &table->entries[i];
+        entry->mcs = i;
+        entry->nss = 1;
+        entry->bw = 20;
+        entry->gi = 0;
+        entry->dcm = 0;
+        entry->flags = WIFI7_RATE_FLAG_EHT;
+        entry->bitrate = wifi7_calculate_bitrate(i, 1, 20, 0);
+        entry->tries = 0;
+        entry->success = 0;
+        entry->attempts = 0;
+        entry->last_success = 0;
+        entry->last_attempt = 0;
+        entry->perfect_tx_time = wifi7_calculate_tx_time(i, 1, 20, 0);
+        entry->max_tp_rate = 0;
+        entry->valid = true;
     }
-    
-    table->n_rates = idx;
-    table->max_rate = idx - 1;
-    table->min_rate = 0;
-    table->probe_rate = idx / 2;
-    table->fallback_rate = 0;
+}
+
+static void update_rate_stats(struct wifi7_rate_dev *dev,
+                            struct wifi7_rate_entry *rate,
+                            bool success)
+{
+    unsigned long flags;
+
+    spin_lock_irqsave(&dev->lock, flags);
+
+    /* Update rate entry statistics */
+    rate->attempts++;
+    if (success) {
+        rate->success++;
+        rate->last_success = jiffies;
+    }
+    rate->last_attempt = jiffies;
+
+    /* Update global statistics */
+    dev->stats.tx_packets++;
+    if (success) {
+        dev->stats.tx_success++;
+    } else {
+        dev->stats.tx_failures++;
+        dev->stats.tx_retries++;
+    }
+
+    spin_unlock_irqrestore(&dev->lock, flags);
 }
 
 /* Rate selection algorithms */
-static u16 wifi7_rate_select_minstrel(struct wifi7_rate *rate,
-                                    struct sk_buff *skb)
+static struct wifi7_rate_entry *select_rate_minstrel(struct wifi7_rate_dev *dev,
+                                                   struct sk_buff *skb)
 {
-    struct wifi7_rate_table *table = &rate->tables[0];
-    struct wifi7_rate_stats *stats;
-    u16 best_rate = rate->current_rate;
-    u32 best_tp = 0;
-    int i;
-    
-    /* Find rate with best throughput */
-    for (i = 0; i < table->n_rates; i++) {
-        stats = &table->stats[i];
-        
-        if (stats->attempts == 0)
-            continue;
-            
-        u32 tp = stats->success * table->rates[i].bitrate /
-                 stats->attempts;
-                 
-        if (tp > best_tp) {
-            best_tp = tp;
-            best_rate = i;
-        }
-    }
-    
-    /* Occasionally probe other rates */
-    if (prandom_u32() % 10 == 0) {
-        u16 probe_rate = prandom_u32() % table->n_rates;
-        if (probe_rate != best_rate) {
-            rate->stats.probes++;
-            return probe_rate;
-        }
-    }
-    
-    return best_rate;
-}
-
-static u16 wifi7_rate_select_pid(struct wifi7_rate *rate,
-                               struct sk_buff *skb)
-{
-    struct wifi7_rate_table *table = &rate->tables[0];
-    struct wifi7_rate_stats *stats = &table->stats[rate->current_rate];
-    s32 error, delta;
-    u16 new_rate;
-    
-    /* Calculate error */
-    error = rate->config.success_threshold -
-            (stats->success * 100 / stats->attempts);
-            
-    /* Apply PID control */
-    delta = error / 2 + (error - stats->last_error) / 4;
-    stats->last_error = error;
-    
-    /* Update rate */
-    if (delta > 0 && rate->current_rate > table->min_rate)
-        new_rate = rate->current_rate - 1;
-    else if (delta < 0 && rate->current_rate < table->max_rate)
-        new_rate = rate->current_rate + 1;
-    else
-        new_rate = rate->current_rate;
-        
-    return new_rate;
-}
-
-static u16 wifi7_rate_select_ml(struct wifi7_rate *rate,
-                              struct sk_buff *skb)
-{
-    struct wifi7_rate_table *table = &rate->tables[0];
-    struct wifi7_rate_stats *stats;
-    u16 best_rate = rate->current_rate;
-    u32 best_score = 0;
-    int i;
-    
-    /* Calculate ML score for each rate */
-    for (i = 0; i < table->n_rates; i++) {
-        stats = &table->stats[i];
-        
-        if (stats->attempts < 10)
-            continue;
-            
-        /* Features for ML model */
-        u32 success_ratio = stats->success * 100 / stats->attempts;
-        u32 retry_ratio = stats->retries * 100 / stats->attempts;
-        u32 perfect_ratio = stats->perfect * 100 / stats->success;
-        u32 throughput = stats->throughput;
-        u32 airtime = stats->airtime;
-        
-        /* Simple linear model */
-        u32 score = success_ratio * 2 +
-                   (100 - retry_ratio) * 3 +
-                   perfect_ratio * 2 +
-                   throughput / 1000 +
-                   (100 - airtime);
-                   
-        if (score > best_score) {
-            best_score = score;
-            best_rate = i;
-        }
-    }
-    
-    return best_rate;
-}
-
-/* Rate update work handler */
-static void wifi7_rate_update_work(struct work_struct *work)
-{
-    struct wifi7_rate *rate = container_of(to_delayed_work(work),
-                                         struct wifi7_rate, update_work);
-    struct wifi7_rate_table *table = &rate->tables[0];
-    struct wifi7_rate_stats *stats;
+    struct wifi7_rate_table *table = &dev->rate_table.table;
+    struct wifi7_rate_entry *best_rate = NULL;
     unsigned long flags;
-    u16 new_rate;
-    
-    spin_lock_irqsave(&rate->lock, flags);
-    
-    /* Select new rate */
-    switch (rate->config.algorithm) {
-    case WIFI7_RATE_ALGO_MINSTREL:
-        new_rate = wifi7_rate_select_minstrel(rate, NULL);
-        break;
-    case WIFI7_RATE_ALGO_PID:
-        new_rate = wifi7_rate_select_pid(rate, NULL);
-        break;
-    case WIFI7_RATE_ALGO_ML:
-        new_rate = wifi7_rate_select_ml(rate, NULL);
-        break;
-    default:
-        new_rate = rate->current_rate;
-        break;
+    u32 max_tp = 0;
+    int i;
+
+    spin_lock_irqsave(&dev->rate_table.lock, flags);
+
+    /* Find rate with highest throughput */
+    for (i = 0; i <= table->max_mcs; i++) {
+        struct wifi7_rate_entry *rate = &table->entries[i];
+        u32 tp;
+
+        if (!rate->valid)
+            continue;
+
+        if (rate->attempts == 0)
+            continue;
+
+        /* Calculate throughput */
+        tp = rate->bitrate * rate->success / rate->attempts;
+        if (tp > max_tp) {
+            max_tp = tp;
+            best_rate = rate;
+        }
     }
-    
-    /* Update rate if changed */
-    if (new_rate != rate->current_rate) {
-        rate->last_rate = rate->current_rate;
-        rate->current_rate = new_rate;
-        rate->stats.rate_changes++;
+
+    spin_unlock_irqrestore(&dev->rate_table.lock, flags);
+    return best_rate;
+}
+
+static struct wifi7_rate_entry *select_rate_pid(struct wifi7_rate_dev *dev,
+                                              struct sk_buff *skb)
+{
+    struct wifi7_rate_table *table = &dev->rate_table.table;
+    struct wifi7_rate_entry *current_rate;
+    unsigned long flags;
+    int error, delta;
+
+    spin_lock_irqsave(&dev->rate_table.lock, flags);
+
+    /* Get current rate */
+    current_rate = &table->entries[table->max_mcs / 2];
+
+    /* Calculate PID error */
+    error = current_rate->success * 100 / current_rate->attempts - 75;
+    delta = error / 10;
+
+    /* Adjust MCS based on error */
+    if (delta > 0 && current_rate->mcs < table->max_mcs) {
+        current_rate = &table->entries[current_rate->mcs + 1];
+    } else if (delta < 0 && current_rate->mcs > 0) {
+        current_rate = &table->entries[current_rate->mcs - 1];
     }
-    
-    /* Update statistics */
-    stats = &table->stats[rate->current_rate];
-    if (stats->throughput > rate->stats.max_tp)
-        rate->stats.max_tp = stats->throughput;
-    if (stats->throughput < rate->stats.min_tp)
-        rate->stats.min_tp = stats->throughput;
-    rate->stats.avg_tp = (rate->stats.avg_tp * 7 +
-                         stats->throughput) / 8;
-                         
-    rate->update_count++;
-    rate->last_update = ktime_get();
-    
-    spin_unlock_irqrestore(&rate->lock, flags);
-    
+
+    spin_unlock_irqrestore(&dev->rate_table.lock, flags);
+    return current_rate;
+}
+
+static struct wifi7_rate_entry *select_rate_ml(struct wifi7_rate_dev *dev,
+                                             struct sk_buff *skb)
+{
+    /* TODO: Implement ML-based rate selection */
+    return select_rate_minstrel(dev, skb);
+}
+
+/* Work handlers */
+static void rate_update_work_handler(struct work_struct *work)
+{
+    struct wifi7_rate_dev *dev = rate_dev;
+    struct wifi7_rate_table *table = &dev->rate_table.table;
+    unsigned long flags;
+    int i;
+
+    if (!dev->initialized)
+        return;
+
+    spin_lock_irqsave(&dev->rate_table.lock, flags);
+
+    /* Update rate statistics */
+    for (i = 0; i <= table->max_mcs; i++) {
+        struct wifi7_rate_entry *rate = &table->entries[i];
+        u32 success_ratio;
+
+        if (!rate->valid)
+            continue;
+
+        if (rate->attempts == 0)
+            continue;
+
+        /* Calculate success ratio */
+        success_ratio = rate->success * 100 / rate->attempts;
+
+        /* Update EWMA probability */
+        dev->stats.prob_ewma = (dev->stats.prob_ewma * 75 + success_ratio * 25) / 100;
+
+        /* Update throughput */
+        dev->stats.cur_tp = rate->bitrate * success_ratio / 100;
+        if (dev->stats.cur_tp > dev->stats.max_tp)
+            dev->stats.max_tp = dev->stats.cur_tp;
+    }
+
+    dev->stats.last_update = ktime_get();
+
+    spin_unlock_irqrestore(&dev->rate_table.lock, flags);
+
     /* Schedule next update */
-    if (rate->config.update_interval > 0)
-        schedule_delayed_work(&rate->update_work,
-                            msecs_to_jiffies(rate->config.update_interval));
+    if (dev->config.auto_adjust)
+        schedule_delayed_work(&dev->workers.update_work,
+                            msecs_to_jiffies(dev->config.update_interval));
 }
 
-/* Probe work handler */
-static void wifi7_rate_probe_work(struct work_struct *work)
+static void rate_stats_work_handler(struct work_struct *work)
 {
-    struct wifi7_rate *rate = container_of(to_delayed_work(work),
-                                         struct wifi7_rate, probe_work);
-    struct wifi7_rate_table *table = &rate->tables[0];
+    struct wifi7_rate_dev *dev = rate_dev;
     unsigned long flags;
-    
-    spin_lock_irqsave(&rate->lock, flags);
-    
-    /* Select probe rate */
-    if (rate->config.algorithm == WIFI7_RATE_ALGO_MINSTREL) {
-        u16 probe_rate = prandom_u32() % table->n_rates;
-        if (probe_rate != rate->current_rate) {
-            rate->last_rate = rate->current_rate;
-            rate->current_rate = probe_rate;
-            rate->stats.probes++;
-        }
+
+    if (!dev->initialized)
+        return;
+
+    spin_lock_irqsave(&dev->lock, flags);
+
+    /* Update perfect/average TX times */
+    dev->stats.perfect_tx_time = 0;  /* TODO: Calculate from rate table */
+    dev->stats.avg_tx_time = 0;      /* TODO: Calculate from rate table */
+
+    /* Update sampling statistics */
+    if (dev->config.sample_mode) {
+        dev->stats.sample_count++;
+        /* TODO: Update sampling statistics */
     }
-    
-    spin_unlock_irqrestore(&rate->lock, flags);
-    
-    /* Schedule next probe */
-    if (rate->config.probe_interval > 0)
-        schedule_delayed_work(&rate->probe_work,
-                            msecs_to_jiffies(rate->config.probe_interval));
+
+    spin_unlock_irqrestore(&dev->lock, flags);
+
+    /* Schedule next collection */
+    schedule_delayed_work(&dev->workers.stats_work, HZ);
 }
 
-/* Public API Implementation */
+/* Module initialization */
 int wifi7_rate_init(struct wifi7_dev *dev)
 {
-    struct wifi7_rate *rate;
+    struct wifi7_rate_dev *rdev;
     int ret;
-    
-    rate = kzalloc(sizeof(*rate), GFP_KERNEL);
-    if (!rate)
+
+    /* Allocate device context */
+    rdev = kzalloc(sizeof(*rdev), GFP_KERNEL);
+    if (!rdev)
         return -ENOMEM;
-        
-    /* Initialize lock */
-    spin_lock_init(&rate->lock);
-    
-    /* Initialize rate tables */
-    rate->tables = kzalloc(sizeof(struct wifi7_rate_table),
-                          GFP_KERNEL);
-    if (!rate->tables) {
+
+    rdev->dev = dev;
+    spin_lock_init(&rdev->lock);
+    spin_lock_init(&rdev->rate_table.lock);
+    spin_lock_init(&rdev->history.lock);
+    spin_lock_init(&rdev->ml.lock);
+    rate_dev = rdev;
+
+    /* Initialize work queues */
+    INIT_DELAYED_WORK(&rdev->workers.update_work, rate_update_work_handler);
+    INIT_DELAYED_WORK(&rdev->workers.stats_work, rate_stats_work_handler);
+    init_completion(&rdev->workers.update_done);
+
+    /* Initialize rate table */
+    init_rate_table(&rdev->rate_table.table);
+
+    /* Allocate history buffer */
+    rdev->history.history = kzalloc(sizeof(u32) * 1024, GFP_KERNEL);
+    if (!rdev->history.history) {
         ret = -ENOMEM;
-        goto err_free_rate;
+        goto err_free;
     }
-    
-    wifi7_rate_init_table(&rate->tables[0]);
-    rate->n_tables = 1;
-    
-    /* Initialize work items */
-    INIT_DELAYED_WORK(&rate->update_work, wifi7_rate_update_work);
-    INIT_DELAYED_WORK(&rate->probe_work, wifi7_rate_probe_work);
-    
+    rdev->history.history_size = 1024;
+
     /* Set default configuration */
-    rate->config.algorithm = WIFI7_RATE_ALGO_MINSTREL;
-    rate->config.max_retry = WIFI7_RATE_MAX_RETRIES;
-    rate->config.update_interval = 100; /* 100ms */
-    rate->config.probe_interval = 1000; /* 1s */
-    rate->config.ewma_level = 75;
-    rate->config.success_threshold = 85;
-    rate->config.tx_power_max = 100;
-    rate->config.tx_power_min = 0;
-    rate->config.ampdu_enabled = true;
-    rate->config.amsdu_enabled = true;
-    rate->config.mu_enabled = true;
-    rate->config.ofdma_enabled = true;
-    rate->config.mlo_enabled = true;
-    
-    dev->rate = rate;
+    rdev->config.algorithm = WIFI7_RATE_ALGO_MINSTREL;
+    rdev->config.capabilities = WIFI7_RATE_CAP_MCS_15 |
+                               WIFI7_RATE_CAP_4K_QAM |
+                               WIFI7_RATE_CAP_OFDMA |
+                               WIFI7_RATE_CAP_MU_MIMO |
+                               WIFI7_RATE_CAP_320MHZ |
+                               WIFI7_RATE_CAP_16_SS |
+                               WIFI7_RATE_CAP_EHT |
+                               WIFI7_RATE_CAP_MLO |
+                               WIFI7_RATE_CAP_DYNAMIC;
+    rdev->config.max_retry = WIFI7_RATE_MAX_RETRY;
+    rdev->config.update_interval = 100;
+    rdev->config.auto_adjust = true;
+    rdev->config.sample_mode = true;
+    rdev->config.ml_enabled = false;
+    rdev->config.limits.min_mcs = 0;
+    rdev->config.limits.max_mcs = WIFI7_RATE_MAX_MCS;
+    rdev->config.limits.min_nss = 1;
+    rdev->config.limits.max_nss = WIFI7_RATE_MAX_NSS;
+    rdev->config.limits.min_bw = 20;
+    rdev->config.limits.max_bw = WIFI7_RATE_MAX_BW;
+
+    rdev->initialized = true;
+    dev_info(dev->dev, "Rate control initialized\n");
+
     return 0;
-    
-err_free_rate:
-    kfree(rate);
+
+err_free:
+    kfree(rdev);
     return ret;
 }
-EXPORT_SYMBOL_GPL(wifi7_rate_init);
+EXPORT_SYMBOL(wifi7_rate_init);
 
 void wifi7_rate_deinit(struct wifi7_dev *dev)
 {
-    struct wifi7_rate *rate = dev->rate;
-    
-    if (!rate)
-        return;
-        
-    /* Cancel work items */
-    cancel_delayed_work_sync(&rate->update_work);
-    cancel_delayed_work_sync(&rate->probe_work);
-    
-    kfree(rate->tables);
-    kfree(rate);
-    dev->rate = NULL;
-}
-EXPORT_SYMBOL_GPL(wifi7_rate_deinit);
+    struct wifi7_rate_dev *rdev = rate_dev;
 
+    if (!rdev)
+        return;
+
+    rdev->initialized = false;
+
+    /* Cancel workers */
+    cancel_delayed_work_sync(&rdev->workers.update_work);
+    cancel_delayed_work_sync(&rdev->workers.stats_work);
+
+    kfree(rdev->history.history);
+    kfree(rdev);
+    rate_dev = NULL;
+
+    dev_info(dev->dev, "Rate control deinitialized\n");
+}
+EXPORT_SYMBOL(wifi7_rate_deinit);
+
+/* Module interface */
 int wifi7_rate_start(struct wifi7_dev *dev)
 {
-    struct wifi7_rate *rate = dev->rate;
-    
-    if (!rate)
+    struct wifi7_rate_dev *rdev = rate_dev;
+
+    if (!rdev || !rdev->initialized)
         return -EINVAL;
-        
-    /* Start rate control */
-    rate->current_rate = rate->tables[0].min_rate;
-    rate->last_rate = rate->current_rate;
-    rate->update_count = 0;
-    rate->last_update = ktime_get();
-    
-    /* Schedule work */
-    if (rate->config.update_interval > 0)
-        schedule_delayed_work(&rate->update_work,
-                            msecs_to_jiffies(rate->config.update_interval));
-                            
-    if (rate->config.probe_interval > 0)
-        schedule_delayed_work(&rate->probe_work,
-                            msecs_to_jiffies(rate->config.probe_interval));
-                            
+
+    /* Start workers */
+    schedule_delayed_work(&rdev->workers.update_work,
+                         msecs_to_jiffies(rdev->config.update_interval));
+    schedule_delayed_work(&rdev->workers.stats_work, HZ);
+
+    dev_info(dev->dev, "Rate control started\n");
     return 0;
 }
-EXPORT_SYMBOL_GPL(wifi7_rate_start);
+EXPORT_SYMBOL(wifi7_rate_start);
 
 void wifi7_rate_stop(struct wifi7_dev *dev)
 {
-    struct wifi7_rate *rate = dev->rate;
-    
-    if (!rate)
+    struct wifi7_rate_dev *rdev = rate_dev;
+
+    if (!rdev || !rdev->initialized)
         return;
-        
-    /* Stop rate control */
-    cancel_delayed_work_sync(&rate->update_work);
-    cancel_delayed_work_sync(&rate->probe_work);
+
+    /* Cancel workers */
+    cancel_delayed_work_sync(&rdev->workers.update_work);
+    cancel_delayed_work_sync(&rdev->workers.stats_work);
+
+    dev_info(dev->dev, "Rate control stopped\n");
 }
-EXPORT_SYMBOL_GPL(wifi7_rate_stop);
+EXPORT_SYMBOL(wifi7_rate_stop);
+
+/* Configuration interface */
+int wifi7_rate_set_config(struct wifi7_dev *dev,
+                         struct wifi7_rate_config *config)
+{
+    struct wifi7_rate_dev *rdev = rate_dev;
+    unsigned long flags;
+
+    if (!rdev || !rdev->initialized || !config)
+        return -EINVAL;
+
+    spin_lock_irqsave(&rdev->lock, flags);
+    memcpy(&rdev->config, config, sizeof(*config));
+    spin_unlock_irqrestore(&rdev->lock, flags);
+
+    return 0;
+}
+EXPORT_SYMBOL(wifi7_rate_set_config);
+
+int wifi7_rate_get_config(struct wifi7_dev *dev,
+                         struct wifi7_rate_config *config)
+{
+    struct wifi7_rate_dev *rdev = rate_dev;
+    unsigned long flags;
+
+    if (!rdev || !rdev->initialized || !config)
+        return -EINVAL;
+
+    spin_lock_irqsave(&rdev->lock, flags);
+    memcpy(config, &rdev->config, sizeof(*config));
+    spin_unlock_irqrestore(&rdev->lock, flags);
+
+    return 0;
+}
+EXPORT_SYMBOL(wifi7_rate_get_config);
+
+/* Rate table interface */
+int wifi7_rate_get_table(struct wifi7_dev *dev,
+                        struct wifi7_rate_table *table)
+{
+    struct wifi7_rate_dev *rdev = rate_dev;
+    unsigned long flags;
+
+    if (!rdev || !rdev->initialized || !table)
+        return -EINVAL;
+
+    spin_lock_irqsave(&rdev->rate_table.lock, flags);
+    memcpy(table, &rdev->rate_table.table, sizeof(*table));
+    spin_unlock_irqrestore(&rdev->rate_table.lock, flags);
+
+    return 0;
+}
+EXPORT_SYMBOL(wifi7_rate_get_table);
+
+int wifi7_rate_update_table(struct wifi7_dev *dev,
+                           struct wifi7_rate_table *table)
+{
+    struct wifi7_rate_dev *rdev = rate_dev;
+    unsigned long flags;
+
+    if (!rdev || !rdev->initialized || !table)
+        return -EINVAL;
+
+    spin_lock_irqsave(&rdev->rate_table.lock, flags);
+    memcpy(&rdev->rate_table.table, table, sizeof(*table));
+    spin_unlock_irqrestore(&rdev->rate_table.lock, flags);
+
+    return 0;
+}
+EXPORT_SYMBOL(wifi7_rate_update_table);
+
+/* Statistics interface */
+int wifi7_rate_get_stats(struct wifi7_dev *dev,
+                        struct wifi7_rate_stats *stats)
+{
+    struct wifi7_rate_dev *rdev = rate_dev;
+    unsigned long flags;
+
+    if (!rdev || !rdev->initialized || !stats)
+        return -EINVAL;
+
+    spin_lock_irqsave(&rdev->lock, flags);
+    memcpy(stats, &rdev->stats, sizeof(*stats));
+    spin_unlock_irqrestore(&rdev->lock, flags);
+
+    return 0;
+}
+EXPORT_SYMBOL(wifi7_rate_get_stats);
+
+int wifi7_rate_clear_stats(struct wifi7_dev *dev)
+{
+    struct wifi7_rate_dev *rdev = rate_dev;
+    unsigned long flags;
+
+    if (!rdev || !rdev->initialized)
+        return -EINVAL;
+
+    spin_lock_irqsave(&rdev->lock, flags);
+    memset(&rdev->stats, 0, sizeof(rdev->stats));
+    spin_unlock_irqrestore(&rdev->lock, flags);
+
+    return 0;
+}
+EXPORT_SYMBOL(wifi7_rate_clear_stats);
+
+/* Rate selection interface */
+int wifi7_rate_get_max_rate(struct wifi7_dev *dev,
+                           struct wifi7_rate_entry *rate)
+{
+    struct wifi7_rate_dev *rdev = rate_dev;
+    struct wifi7_rate_table *table = &rdev->rate_table.table;
+    unsigned long flags;
+
+    if (!rdev || !rdev->initialized || !rate)
+        return -EINVAL;
+
+    spin_lock_irqsave(&rdev->rate_table.lock, flags);
+    memcpy(rate, &table->entries[table->max_mcs], sizeof(*rate));
+    spin_unlock_irqrestore(&rdev->rate_table.lock, flags);
+
+    return 0;
+}
+EXPORT_SYMBOL(wifi7_rate_get_max_rate);
+
+int wifi7_rate_get_min_rate(struct wifi7_dev *dev,
+                           struct wifi7_rate_entry *rate)
+{
+    struct wifi7_rate_dev *rdev = rate_dev;
+    struct wifi7_rate_table *table = &rdev->rate_table.table;
+    unsigned long flags;
+
+    if (!rdev || !rdev->initialized || !rate)
+        return -EINVAL;
+
+    spin_lock_irqsave(&rdev->rate_table.lock, flags);
+    memcpy(rate, &table->entries[0], sizeof(*rate));
+    spin_unlock_irqrestore(&rdev->rate_table.lock, flags);
+
+    return 0;
+}
+EXPORT_SYMBOL(wifi7_rate_get_min_rate);
+
+int wifi7_rate_select(struct wifi7_dev *dev,
+                     struct sk_buff *skb,
+                     struct wifi7_rate_entry *rate)
+{
+    struct wifi7_rate_dev *rdev = rate_dev;
+    struct wifi7_rate_entry *selected_rate = NULL;
+
+    if (!rdev || !rdev->initialized || !skb || !rate)
+        return -EINVAL;
+
+    /* Select rate based on algorithm */
+    switch (rdev->config.algorithm) {
+    case WIFI7_RATE_ALGO_MINSTREL:
+        selected_rate = select_rate_minstrel(rdev, skb);
+        break;
+    case WIFI7_RATE_ALGO_PID:
+        selected_rate = select_rate_pid(rdev, skb);
+        break;
+    case WIFI7_RATE_ALGO_ML:
+        selected_rate = select_rate_ml(rdev, skb);
+        break;
+    default:
+        selected_rate = select_rate_minstrel(rdev, skb);
+        break;
+    }
+
+    if (!selected_rate)
+        return -EINVAL;
+
+    memcpy(rate, selected_rate, sizeof(*rate));
+    return 0;
+}
+EXPORT_SYMBOL(wifi7_rate_select);
 
 int wifi7_rate_update(struct wifi7_dev *dev,
                      struct sk_buff *skb,
-                     bool success, u8 retries)
+                     struct wifi7_rate_entry *rate,
+                     bool success)
 {
-    struct wifi7_rate *rate = dev->rate;
-    struct wifi7_rate_table *table;
-    struct wifi7_rate_stats *stats;
-    unsigned long flags;
-    
-    if (!rate)
+    struct wifi7_rate_dev *rdev = rate_dev;
+
+    if (!rdev || !rdev->initialized || !skb || !rate)
         return -EINVAL;
-        
-    spin_lock_irqsave(&rate->lock, flags);
-    
-    table = &rate->tables[0];
-    stats = &table->stats[rate->current_rate];
-    
-    /* Update statistics */
-    stats->attempts++;
-    if (success) {
-        stats->success++;
-        if (retries == 0)
-            stats->perfect++;
-        else
-            stats->imperfect++;
-    } else {
-        stats->failures++;
-    }
-    stats->retries += retries;
-    
-    /* Update throughput */
-    if (success) {
-        u32 airtime = table->rates[rate->current_rate].duration *
-                     (retries + 1);
-        stats->airtime += airtime;
-        stats->throughput = (stats->throughput * 7 +
-                           table->rates[rate->current_rate].bitrate) / 8;
-    }
-    
-    spin_unlock_irqrestore(&rate->lock, flags);
+
+    update_rate_stats(rdev, rate, success);
     return 0;
 }
-EXPORT_SYMBOL_GPL(wifi7_rate_update);
+EXPORT_SYMBOL(wifi7_rate_update);
 
-struct wifi7_rate_info *wifi7_rate_get_next(struct wifi7_dev *dev,
-                                          struct sk_buff *skb)
-{
-    struct wifi7_rate *rate = dev->rate;
-    struct wifi7_rate_table *table;
-    struct wifi7_rate_info *info;
-    unsigned long flags;
-    
-    if (!rate)
-        return NULL;
-        
-    spin_lock_irqsave(&rate->lock, flags);
-    
-    table = &rate->tables[0];
-    info = &table->rates[rate->current_rate];
-    
-    spin_unlock_irqrestore(&rate->lock, flags);
-    return info;
-}
-EXPORT_SYMBOL_GPL(wifi7_rate_get_next);
+/* Module parameters */
+static bool rate_auto_adjust = true;
+module_param(rate_auto_adjust, bool, 0644);
+MODULE_PARM_DESC(rate_auto_adjust, "Enable automatic rate adjustment");
+
+static bool rate_sample_mode = true;
+module_param(rate_sample_mode, bool, 0644);
+MODULE_PARM_DESC(rate_sample_mode, "Enable rate sampling");
+
+static bool rate_ml_enable = false;
+module_param(rate_ml_enable, bool, 0644);
+MODULE_PARM_DESC(rate_ml_enable, "Enable ML-based rate selection");
 
 /* Module initialization */
 static int __init wifi7_rate_init_module(void)
 {
-    pr_info("WiFi 7 Rate Control initialized\n");
+    pr_info("WiFi 7 rate control loaded\n");
     return 0;
 }
 
 static void __exit wifi7_rate_exit_module(void)
 {
-    pr_info("WiFi 7 Rate Control unloaded\n");
+    pr_info("WiFi 7 rate control unloaded\n");
 }
 
 module_init(wifi7_rate_init_module);
@@ -458,5 +626,5 @@ module_exit(wifi7_rate_exit_module);
 
 MODULE_LICENSE("MIT");
 MODULE_AUTHOR("Fayssal Chokri <fayssalchokri@gmail.com>");
-MODULE_DESCRIPTION("WiFi 7 Rate Control");
+MODULE_DESCRIPTION("WiFi 7 Rate Control and Adaptation");
 MODULE_VERSION("1.0"); 

@@ -111,7 +111,8 @@ obj-$(CONFIG_WIFI7) += \
     src/power/power_thermal.o \
     src/power/power_profile.o \
     src/power/power_domain.o \
-    src/power/power_dvfs.o
+    src/power/power_dvfs.o \
+    src/mac/wifi7_rate.o
 
 ccflags-y := -DDEBUG -g -Wall -Werror
 ldflags-y := -T$(src)/wifi7.lds
