@@ -21,6 +21,7 @@ wifi67-objs := \
     src/mac/wifi7_qos.o \
     src/mac/wifi7_ba.o \
     src/mac/wifi7_aggregation.o \
+    src/vendors/tplink/wifi7_tplink.o \
     src/phy/phy_core.o \
     src/dma/dma_core.o \
     src/dma/dma_monitor.o \
