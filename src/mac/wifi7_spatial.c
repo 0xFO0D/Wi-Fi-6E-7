@@ -1,5 +1,5 @@
 /*
- * WiFi 7 Spatial Reuse
+ * WiFi 7 Spatial Stream Management and MU-MIMO Coordination
  * Copyright (c) 2024 Fayssal Chokri <fayssalchokri@gmail.com>
  */
 
@@ -13,540 +13,595 @@
 #include <linux/crc32.h>
 #include <linux/completion.h>
 #include <linux/ktime.h>
+#include <linux/math64.h>
 #include "wifi7_spatial.h"
 #include "wifi7_mac.h"
+#include "../hal/wifi7_rf.h"
+
+/* Device state */
+struct wifi7_spatial_dev {
+    struct wifi7_dev *dev;           /* Core device structure */
+    struct wifi7_spatial_config config; /* Spatial configuration */
+    struct wifi7_spatial_stats stats;  /* Spatial statistics */
+    struct dentry *debugfs_dir;       /* debugfs directory */
+    spinlock_t lock;                 /* Device lock */
+    bool initialized;                /* Initialization flag */
+    struct {
+        struct wifi7_spatial_csi *csi;  /* CSI array */
+        u32 num_entries;                /* Number of CSI entries */
+        spinlock_t lock;                /* CSI lock */
+    } csi_data;
+    struct {
+        struct wifi7_spatial_beam *patterns; /* Beam patterns */
+        u8 active_pattern;                  /* Active pattern ID */
+        spinlock_t lock;                    /* Pattern lock */
+    } beamforming;
+    struct {
+        struct wifi7_spatial_group *groups; /* MU-MIMO groups */
+        u32 num_groups;                    /* Number of groups */
+        spinlock_t lock;                   /* Group lock */
+    } mu_mimo;
+    struct {
+        struct delayed_work csi_work;      /* CSI collection */
+        struct delayed_work beam_work;     /* Beam tracking */
+        struct delayed_work group_work;    /* Group management */
+        struct completion sounding_done;   /* Sounding completion */
+    } workers;
+};
+
+/* Global device context */
+static struct wifi7_spatial_dev *spatial_dev;
 
 /* Helper functions */
-static inline bool is_bss_color_valid(u8 color)
+static inline bool is_valid_stream_count(u8 streams)
 {
-    return color < WIFI7_SR_MAX_BSS_COLOR;
+    return streams > 0 && streams <= WIFI7_MAX_SPATIAL_STREAMS;
 }
 
-static inline bool is_obss_pd_valid(u8 pd_level)
+static inline bool is_valid_group_id(u8 group_id)
 {
-    return pd_level <= WIFI7_SR_MAX_OBSS_PD;
+    return group_id < WIFI7_MAX_MU_GROUPS;
 }
 
-static inline bool is_power_valid(s8 power)
+static inline bool is_valid_pattern_id(u8 pattern_id)
 {
-    return power >= -WIFI7_SR_MAX_TX_POWER &&
-           power <= WIFI7_SR_MAX_TX_POWER;
+    return pattern_id < WIFI7_MAX_BEAM_PATTERNS;
 }
 
-/* BSS color management */
-static void wifi7_sr_color_work(struct work_struct *work)
+/* CSI processing */
+static void process_csi_update(struct wifi7_spatial_dev *dev,
+                             struct wifi7_spatial_csi *csi)
 {
-    struct wifi7_sr *sr = container_of(to_delayed_work(work),
-                                     struct wifi7_sr, color_work);
     unsigned long flags;
-    bool collision = false;
+    int i;
+
+    if (!csi->magnitude || !csi->phase)
+        return;
+
+    spin_lock_irqsave(&dev->csi_data.lock, flags);
+
+    /* Find empty or oldest CSI slot */
+    int oldest_idx = 0;
+    u32 oldest_time = U32_MAX;
     
-    spin_lock_irqsave(&sr->color_lock, flags);
-    
-    if (!(sr->flags & WIFI7_SR_FLAG_BSS_COLOR))
-        goto out_unlock;
-        
-    /* Check for collisions */
-    if (sr->bss_color.collision_count > 0) {
-        ktime_t now = ktime_get();
-        s64 delta = ktime_ms_delta(now, sr->bss_color.last_collision);
-        
-        if (delta < 1000) { /* Within 1 second */
-            collision = true;
-            sr->stats.color_collisions++;
+    for (i = 0; i < dev->csi_data.num_entries; i++) {
+        if (dev->csi_data.csi[i].timestamp == 0) {
+            oldest_idx = i;
+            break;
+        }
+        if (dev->csi_data.csi[i].timestamp < oldest_time) {
+            oldest_time = dev->csi_data.csi[i].timestamp;
+            oldest_idx = i;
         }
     }
-    
-    /* Handle collision */
-    if (collision) {
-        u8 new_color;
-        
-        /* Generate new color */
-        do {
-            get_random_bytes(&new_color, sizeof(new_color));
-            new_color %= WIFI7_SR_MAX_BSS_COLOR;
-        } while (new_color == sr->bss_color.color);
-        
-        sr->bss_color.color = new_color;
-        sr->bss_color.collision_count = 0;
-        sr->stats.color_changes++;
-    }
-    
-out_unlock:
-    spin_unlock_irqrestore(&sr->color_lock, flags);
-    
-    /* Schedule next check */
-    schedule_delayed_work(&sr->color_work, HZ);
+
+    /* Update CSI data */
+    memcpy(&dev->csi_data.csi[oldest_idx], csi, sizeof(*csi));
+    dev->csi_data.csi[oldest_idx].timestamp = ktime_get_seconds();
+
+    dev->stats.csi_updates++;
+
+    spin_unlock_irqrestore(&dev->csi_data.lock, flags);
 }
 
-/* SRG management */
-static void wifi7_sr_srg_work(struct work_struct *work)
+/* Beamforming management */
+static int update_beam_pattern(struct wifi7_spatial_dev *dev,
+                             struct wifi7_spatial_beam *beam)
 {
-    struct wifi7_sr *sr = container_of(to_delayed_work(work),
-                                     struct wifi7_sr, srg_work);
     unsigned long flags;
-    
-    spin_lock_irqsave(&sr->srg_lock, flags);
-    
-    if (!(sr->flags & WIFI7_SR_FLAG_SRG))
-        goto out_unlock;
-        
-    /* Update SRG parameters based on conditions */
-    if (sr->stats.srg_opportunities > 0) {
-        u32 success_rate = sr->stats.srg_successes * 100 /
-                          sr->stats.srg_opportunities;
-                          
-        /* Adjust OBSS PD thresholds */
-        if (success_rate < 50 && sr->srg.obss_pd_min > 0)
-            sr->srg.obss_pd_min--;
-        else if (success_rate > 90 &&
-                 sr->srg.obss_pd_min < WIFI7_SR_MAX_OBSS_PD)
-            sr->srg.obss_pd_min++;
+    int ret = 0;
+
+    if (!is_valid_pattern_id(beam->pattern_id))
+        return -EINVAL;
+
+    spin_lock_irqsave(&dev->beamforming.lock, flags);
+
+    /* Update beam pattern */
+    memcpy(&dev->beamforming.patterns[beam->pattern_id], beam, sizeof(*beam));
+
+    /* Apply pattern if it's the active one */
+    if (beam->pattern_id == dev->beamforming.active_pattern) {
+        ret = wifi7_rf_set_beam_pattern(dev->dev, beam);
+        if (ret == 0)
+            dev->stats.beam_switches++;
     }
-    
-out_unlock:
-    spin_unlock_irqrestore(&sr->srg_lock, flags);
-    
-    /* Schedule next update */
-    schedule_delayed_work(&sr->srg_work, HZ/2);
+
+    spin_unlock_irqrestore(&dev->beamforming.lock, flags);
+    return ret;
 }
 
-/* PSR management */
-static void wifi7_sr_psr_work(struct work_struct *work)
+/* MU-MIMO group management */
+static int update_mu_group(struct wifi7_spatial_dev *dev,
+                          struct wifi7_spatial_group *group)
 {
-    struct wifi7_sr *sr = container_of(to_delayed_work(work),
-                                     struct wifi7_sr, psr_work);
     unsigned long flags;
-    
-    spin_lock_irqsave(&sr->psr_lock, flags);
-    
-    if (!(sr->flags & WIFI7_SR_FLAG_PSR))
-        goto out_unlock;
-        
-    /* Update PSR parameters based on performance */
-    if (sr->stats.psr_opportunities > 0) {
-        u32 success_rate = sr->stats.psr_successes * 100 /
-                          sr->stats.psr_opportunities;
-                          
-        /* Adjust threshold and margin */
-        if (success_rate < 60) {
-            if (sr->psr.threshold > 0)
-                sr->psr.threshold--;
-            if (sr->psr.margin < WIFI7_SR_MAX_PSR_THRESH)
-                sr->psr.margin++;
-        } else if (success_rate > 90) {
-            if (sr->psr.threshold < WIFI7_SR_MAX_PSR_THRESH)
-                sr->psr.threshold++;
-            if (sr->psr.margin > 0)
-                sr->psr.margin--;
-        }
+    int ret = 0;
+
+    if (!is_valid_group_id(group->group_id))
+        return -EINVAL;
+
+    if (group->num_users > WIFI7_MAX_USERS_PER_GROUP)
+        return -EINVAL;
+
+    spin_lock_irqsave(&dev->mu_mimo.lock, flags);
+
+    /* Update group configuration */
+    memcpy(&dev->mu_mimo.groups[group->group_id], group, sizeof(*group));
+
+    /* Allocate streams for the group */
+    if (group->active) {
+        ret = wifi7_mac_alloc_mu_streams(dev->dev, group);
+        if (ret == 0)
+            dev->stats.group_changes++;
     }
-    
-out_unlock:
-    spin_unlock_irqrestore(&sr->psr_lock, flags);
-    
-    /* Schedule next update */
-    schedule_delayed_work(&sr->psr_work, HZ/2);
+
+    spin_unlock_irqrestore(&dev->mu_mimo.lock, flags);
+    return ret;
 }
 
-/* Power control management */
-static void wifi7_sr_power_work(struct work_struct *work)
+/* Work handlers */
+static void spatial_csi_work_handler(struct work_struct *work)
 {
-    struct wifi7_sr *sr = container_of(to_delayed_work(work),
-                                     struct wifi7_sr, power_work);
-    unsigned long flags;
-    
-    spin_lock_irqsave(&sr->power_lock, flags);
-    
-    if (!(sr->flags & WIFI7_SR_FLAG_POWER))
-        goto out_unlock;
-        
-    /* Check power boost timeout */
-    if (sr->power.power_boost) {
-        if (sr->power.boost_timeout > 0) {
-            sr->power.boost_timeout--;
-            if (sr->power.boost_timeout == 0) {
-                sr->power.power_boost = false;
-                sr->power.tx_power = sr->power.rx_power;
-                sr->stats.power_adjustments++;
-            }
-        }
-    }
-    
-    /* Adjust PD threshold based on interference */
-    if (sr->interference.level > 0) {
-        if (sr->power.pd_threshold < WIFI7_SR_MAX_OBSS_PD) {
-            sr->power.pd_threshold++;
-            sr->stats.pd_adjustments++;
-        }
-    } else if (sr->power.pd_threshold > 0) {
-        sr->power.pd_threshold--;
-        sr->stats.pd_adjustments++;
-    }
-    
-out_unlock:
-    spin_unlock_irqrestore(&sr->power_lock, flags);
-    
-    /* Schedule next update */
-    schedule_delayed_work(&sr->power_work, HZ/10);
-}
-
-/* Public API Implementation */
-int wifi7_sr_init(struct wifi7_dev *dev)
-{
-    struct wifi7_sr *sr;
+    struct wifi7_spatial_dev *dev = spatial_dev;
+    struct wifi7_spatial_csi csi;
     int ret;
+
+    if (!dev->initialized)
+        return;
+
+    /* Perform channel sounding */
+    ret = wifi7_rf_perform_sounding(dev->dev, &csi);
+    if (ret == 0) {
+        process_csi_update(dev, &csi);
+        dev->stats.sounding.success++;
+    } else {
+        dev->stats.sounding.failures++;
+    }
+
+    /* Schedule next sounding */
+    if (dev->config.mode != WIFI7_SPATIAL_MODE_LEGACY)
+        schedule_delayed_work(&dev->workers.csi_work,
+                            msecs_to_jiffies(dev->config.update_interval));
+}
+
+static void spatial_beam_work_handler(struct work_struct *work)
+{
+    struct wifi7_spatial_dev *dev = spatial_dev;
+    struct wifi7_spatial_beam *beam;
+    unsigned long flags;
+    int ret;
+
+    if (!dev->initialized || !dev->config.tracking)
+        return;
+
+    spin_lock_irqsave(&dev->beamforming.lock, flags);
+    beam = &dev->beamforming.patterns[dev->beamforming.active_pattern];
+    spin_unlock_irqrestore(&dev->beamforming.lock, flags);
+
+    /* Update beam tracking */
+    ret = wifi7_rf_track_beam(dev->dev, beam);
+    if (ret == 0)
+        dev->stats.tracking_updates++;
+
+    /* Schedule next tracking */
+    if (dev->config.tracking)
+        schedule_delayed_work(&dev->workers.beam_work,
+                            msecs_to_jiffies(dev->config.beamforming.update_rate));
+}
+
+static void spatial_group_work_handler(struct work_struct *work)
+{
+    struct wifi7_spatial_dev *dev = spatial_dev;
+    int i;
+
+    if (!dev->initialized || !dev->config.mu_enabled)
+        return;
+
+    /* Update MU-MIMO group statistics */
+    spin_lock_irq(&dev->mu_mimo.lock);
     
-    sr = kzalloc(sizeof(*sr), GFP_KERNEL);
-    if (!sr)
-        return -ENOMEM;
-        
-    /* Set capabilities */
-    sr->capabilities = WIFI7_SR_CAP_BSS_COLOR |
-                      WIFI7_SR_CAP_NON_SRG_OBSS |
-                      WIFI7_SR_CAP_SRG_OBSS |
-                      WIFI7_SR_CAP_PSR |
-                      WIFI7_SR_CAP_HESIGA |
-                      WIFI7_SR_CAP_EHTVECTOR |
-                      WIFI7_SR_CAP_DYNAMIC |
-                      WIFI7_SR_CAP_ADAPTIVE |
-                      WIFI7_SR_CAP_MULTI_BSS |
-                      WIFI7_SR_CAP_SPATIAL_REUSE |
-                      WIFI7_SR_CAP_POWER_CONTROL |
-                      WIFI7_SR_CAP_INTERFERENCE;
-                      
-    /* Initialize locks */
-    spin_lock_init(&sr->color_lock);
-    spin_lock_init(&sr->srg_lock);
-    spin_lock_init(&sr->psr_lock);
-    spin_lock_init(&sr->power_lock);
-    spin_lock_init(&sr->interference_lock);
+    dev->stats.mu_mimo.active_groups = 0;
+    dev->stats.mu_mimo.total_users = 0;
     
-    /* Create workqueue */
-    sr->wq = create_singlethread_workqueue("wifi7_sr");
-    if (!sr->wq) {
-        ret = -ENOMEM;
-        goto err_free_sr;
+    for (i = 0; i < dev->mu_mimo.num_groups; i++) {
+        if (dev->mu_mimo.groups[i].active) {
+            dev->stats.mu_mimo.active_groups++;
+            dev->stats.mu_mimo.total_users += dev->mu_mimo.groups[i].num_users;
+        }
     }
     
-    /* Initialize work items */
-    INIT_DELAYED_WORK(&sr->color_work, wifi7_sr_color_work);
-    INIT_DELAYED_WORK(&sr->srg_work, wifi7_sr_srg_work);
-    INIT_DELAYED_WORK(&sr->psr_work, wifi7_sr_psr_work);
-    INIT_DELAYED_WORK(&sr->power_work, wifi7_sr_power_work);
-    
-    /* Set default BSS color */
-    get_random_bytes(&sr->bss_color.color, sizeof(sr->bss_color.color));
-    sr->bss_color.color %= WIFI7_SR_MAX_BSS_COLOR;
-    
-    /* Set default SRG parameters */
-    sr->srg.obss_pd_min = 10;
-    sr->srg.obss_pd_max = WIFI7_SR_MAX_OBSS_PD;
-    
-    /* Set default PSR parameters */
-    sr->psr.threshold = WIFI7_SR_MAX_PSR_THRESH / 2;
-    sr->psr.margin = 2;
-    sr->psr.psr_reset_timeout = 100;
-    
-    /* Set default power parameters */
-    sr->power.tx_power = 20;
-    sr->power.rx_power = 20;
-    sr->power.pd_threshold = 10;
-    sr->power.margin = 3;
-    
-    dev->sr = sr;
-    return 0;
-    
-err_free_sr:
-    kfree(sr);
-    return ret;
-}
-EXPORT_SYMBOL_GPL(wifi7_sr_init);
+    spin_unlock_irq(&dev->mu_mimo.lock);
 
-void wifi7_sr_deinit(struct wifi7_dev *dev)
-{
-    struct wifi7_sr *sr = dev->sr;
-    
-    if (!sr)
-        return;
-        
-    /* Cancel work items */
-    cancel_delayed_work_sync(&sr->color_work);
-    cancel_delayed_work_sync(&sr->srg_work);
-    cancel_delayed_work_sync(&sr->psr_work);
-    cancel_delayed_work_sync(&sr->power_work);
-    
-    /* Destroy workqueue */
-    destroy_workqueue(sr->wq);
-    
-    kfree(sr);
-    dev->sr = NULL;
+    /* Schedule next update */
+    if (dev->config.mu_enabled)
+        schedule_delayed_work(&dev->workers.group_work,
+                            msecs_to_jiffies(dev->config.mu_mimo.timeout));
 }
-EXPORT_SYMBOL_GPL(wifi7_sr_deinit);
-
-int wifi7_sr_start(struct wifi7_dev *dev)
-{
-    struct wifi7_sr *sr = dev->sr;
-    
-    if (!sr)
-        return -EINVAL;
-        
-    /* Enable features */
-    sr->flags |= WIFI7_SR_FLAG_BSS_COLOR |
-                 WIFI7_SR_FLAG_NON_SRG |
-                 WIFI7_SR_FLAG_SRG |
-                 WIFI7_SR_FLAG_PSR |
-                 WIFI7_SR_FLAG_POWER;
-                 
-    /* Schedule work */
-    schedule_delayed_work(&sr->color_work, 0);
-    schedule_delayed_work(&sr->srg_work, 0);
-    schedule_delayed_work(&sr->psr_work, 0);
-    schedule_delayed_work(&sr->power_work, 0);
-    
-    return 0;
-}
-EXPORT_SYMBOL_GPL(wifi7_sr_start);
-
-void wifi7_sr_stop(struct wifi7_dev *dev)
-{
-    struct wifi7_sr *sr = dev->sr;
-    
-    if (!sr)
-        return;
-        
-    /* Disable features */
-    sr->flags = 0;
-    
-    /* Cancel work */
-    cancel_delayed_work_sync(&sr->color_work);
-    cancel_delayed_work_sync(&sr->srg_work);
-    cancel_delayed_work_sync(&sr->psr_work);
-    cancel_delayed_work_sync(&sr->power_work);
-}
-EXPORT_SYMBOL_GPL(wifi7_sr_stop);
-
-int wifi7_sr_set_bss_color(struct wifi7_dev *dev,
-                          struct wifi7_sr_bss_color *color)
-{
-    struct wifi7_sr *sr = dev->sr;
-    unsigned long flags;
-    int ret = 0;
-    
-    if (!sr || !color)
-        return -EINVAL;
-        
-    if (!is_bss_color_valid(color->color))
-        return -EINVAL;
-        
-    spin_lock_irqsave(&sr->color_lock, flags);
-    memcpy(&sr->bss_color, color, sizeof(*color));
-    spin_unlock_irqrestore(&sr->color_lock, flags);
-    
-    return ret;
-}
-EXPORT_SYMBOL_GPL(wifi7_sr_set_bss_color);
-
-int wifi7_sr_get_bss_color(struct wifi7_dev *dev,
-                          struct wifi7_sr_bss_color *color)
-{
-    struct wifi7_sr *sr = dev->sr;
-    unsigned long flags;
-    
-    if (!sr || !color)
-        return -EINVAL;
-        
-    spin_lock_irqsave(&sr->color_lock, flags);
-    memcpy(color, &sr->bss_color, sizeof(*color));
-    spin_unlock_irqrestore(&sr->color_lock, flags);
-    
-    return 0;
-}
-EXPORT_SYMBOL_GPL(wifi7_sr_get_bss_color);
-
-int wifi7_sr_set_srg(struct wifi7_dev *dev,
-                     struct wifi7_sr_srg *srg)
-{
-    struct wifi7_sr *sr = dev->sr;
-    unsigned long flags;
-    int ret = 0;
-    
-    if (!sr || !srg)
-        return -EINVAL;
-        
-    if (!is_obss_pd_valid(srg->obss_pd_min) ||
-        !is_obss_pd_valid(srg->obss_pd_max))
-        return -EINVAL;
-        
-    spin_lock_irqsave(&sr->srg_lock, flags);
-    memcpy(&sr->srg, srg, sizeof(*srg));
-    spin_unlock_irqrestore(&sr->srg_lock, flags);
-    
-    return ret;
-}
-EXPORT_SYMBOL_GPL(wifi7_sr_set_srg);
-
-int wifi7_sr_get_srg(struct wifi7_dev *dev,
-                     struct wifi7_sr_srg *srg)
-{
-    struct wifi7_sr *sr = dev->sr;
-    unsigned long flags;
-    
-    if (!sr || !srg)
-        return -EINVAL;
-        
-    spin_lock_irqsave(&sr->srg_lock, flags);
-    memcpy(srg, &sr->srg, sizeof(*srg));
-    spin_unlock_irqrestore(&sr->srg_lock, flags);
-    
-    return 0;
-}
-EXPORT_SYMBOL_GPL(wifi7_sr_get_srg);
-
-int wifi7_sr_set_psr(struct wifi7_dev *dev,
-                     struct wifi7_sr_psr *psr)
-{
-    struct wifi7_sr *sr = dev->sr;
-    unsigned long flags;
-    int ret = 0;
-    
-    if (!sr || !psr)
-        return -EINVAL;
-        
-    spin_lock_irqsave(&sr->psr_lock, flags);
-    memcpy(&sr->psr, psr, sizeof(*psr));
-    spin_unlock_irqrestore(&sr->psr_lock, flags);
-    
-    return ret;
-}
-EXPORT_SYMBOL_GPL(wifi7_sr_set_psr);
-
-int wifi7_sr_get_psr(struct wifi7_dev *dev,
-                     struct wifi7_sr_psr *psr)
-{
-    struct wifi7_sr *sr = dev->sr;
-    unsigned long flags;
-    
-    if (!sr || !psr)
-        return -EINVAL;
-        
-    spin_lock_irqsave(&sr->psr_lock, flags);
-    memcpy(psr, &sr->psr, sizeof(*psr));
-    spin_unlock_irqrestore(&sr->psr_lock, flags);
-    
-    return 0;
-}
-EXPORT_SYMBOL_GPL(wifi7_sr_get_psr);
-
-int wifi7_sr_set_power(struct wifi7_dev *dev,
-                      struct wifi7_sr_power *power)
-{
-    struct wifi7_sr *sr = dev->sr;
-    unsigned long flags;
-    int ret = 0;
-    
-    if (!sr || !power)
-        return -EINVAL;
-        
-    if (!is_power_valid(power->tx_power) ||
-        !is_power_valid(power->rx_power))
-        return -EINVAL;
-        
-    spin_lock_irqsave(&sr->power_lock, flags);
-    memcpy(&sr->power, power, sizeof(*power));
-    spin_unlock_irqrestore(&sr->power_lock, flags);
-    
-    return ret;
-}
-EXPORT_SYMBOL_GPL(wifi7_sr_set_power);
-
-int wifi7_sr_get_power(struct wifi7_dev *dev,
-                      struct wifi7_sr_power *power)
-{
-    struct wifi7_sr *sr = dev->sr;
-    unsigned long flags;
-    
-    if (!sr || !power)
-        return -EINVAL;
-        
-    spin_lock_irqsave(&sr->power_lock, flags);
-    memcpy(power, &sr->power, sizeof(*power));
-    spin_unlock_irqrestore(&sr->power_lock, flags);
-    
-    return 0;
-}
-EXPORT_SYMBOL_GPL(wifi7_sr_get_power);
-
-int wifi7_sr_report_interference(struct wifi7_dev *dev,
-                               struct wifi7_sr_interference *interference)
-{
-    struct wifi7_sr *sr = dev->sr;
-    unsigned long flags;
-    
-    if (!sr || !interference)
-        return -EINVAL;
-        
-    spin_lock_irqsave(&sr->interference_lock, flags);
-    
-    /* Update interference info */
-    memcpy(&sr->interference, interference, sizeof(*interference));
-    sr->stats.interference_events++;
-    sr->stats.interference_duration += interference->duration;
-    
-    /* Trigger mitigation if needed */
-    if (interference->level >= WIFI7_SR_MAX_INTERFERENCE / 2) {
-        sr->power.power_boost = true;
-        sr->power.boost_timeout = 100;
-        sr->stats.interference_mitigations++;
-    }
-    
-    spin_unlock_irqrestore(&sr->interference_lock, flags);
-    
-    return 0;
-}
-EXPORT_SYMBOL_GPL(wifi7_sr_report_interference);
-
-int wifi7_sr_get_stats(struct wifi7_dev *dev,
-                      struct wifi7_sr_stats *stats)
-{
-    struct wifi7_sr *sr = dev->sr;
-    
-    if (!sr || !stats)
-        return -EINVAL;
-        
-    memcpy(stats, &sr->stats, sizeof(*stats));
-    return 0;
-}
-EXPORT_SYMBOL_GPL(wifi7_sr_get_stats);
-
-int wifi7_sr_clear_stats(struct wifi7_dev *dev)
-{
-    struct wifi7_sr *sr = dev->sr;
-    
-    if (!sr)
-        return -EINVAL;
-        
-    memset(&sr->stats, 0, sizeof(sr->stats));
-    return 0;
-}
-EXPORT_SYMBOL_GPL(wifi7_sr_clear_stats);
 
 /* Module initialization */
-static int __init wifi7_sr_init_module(void)
+int wifi7_spatial_init(struct wifi7_dev *dev)
 {
-    pr_info("WiFi 7 Spatial Reuse initialized\n");
+    struct wifi7_spatial_dev *sdev;
+    int ret;
+
+    /* Allocate device context */
+    sdev = kzalloc(sizeof(*sdev), GFP_KERNEL);
+    if (!sdev)
+        return -ENOMEM;
+
+    sdev->dev = dev;
+    spin_lock_init(&sdev->lock);
+    spin_lock_init(&sdev->csi_data.lock);
+    spin_lock_init(&sdev->beamforming.lock);
+    spin_lock_init(&sdev->mu_mimo.lock);
+    spatial_dev = sdev;
+
+    /* Initialize work queues */
+    INIT_DELAYED_WORK(&sdev->workers.csi_work, spatial_csi_work_handler);
+    INIT_DELAYED_WORK(&sdev->workers.beam_work, spatial_beam_work_handler);
+    INIT_DELAYED_WORK(&sdev->workers.group_work, spatial_group_work_handler);
+    init_completion(&sdev->workers.sounding_done);
+
+    /* Allocate CSI buffer */
+    sdev->csi_data.csi = kzalloc(sizeof(struct wifi7_spatial_csi) * 32,
+                                GFP_KERNEL);
+    if (!sdev->csi_data.csi) {
+        ret = -ENOMEM;
+        goto err_free;
+    }
+    sdev->csi_data.num_entries = 32;
+
+    /* Allocate beam patterns */
+    sdev->beamforming.patterns = kzalloc(sizeof(struct wifi7_spatial_beam) *
+                                        WIFI7_MAX_BEAM_PATTERNS, GFP_KERNEL);
+    if (!sdev->beamforming.patterns) {
+        ret = -ENOMEM;
+        goto err_csi;
+    }
+
+    /* Allocate MU-MIMO groups */
+    sdev->mu_mimo.groups = kzalloc(sizeof(struct wifi7_spatial_group) *
+                                  WIFI7_MAX_MU_GROUPS, GFP_KERNEL);
+    if (!sdev->mu_mimo.groups) {
+        ret = -ENOMEM;
+        goto err_beam;
+    }
+    sdev->mu_mimo.num_groups = WIFI7_MAX_MU_GROUPS;
+
+    /* Set default configuration */
+    sdev->config.mode = WIFI7_SPATIAL_MODE_AUTO;
+    sdev->config.capabilities = WIFI7_SPATIAL_CAP_SU_MIMO |
+                               WIFI7_SPATIAL_CAP_MU_MIMO |
+                               WIFI7_SPATIAL_CAP_BEAMFORM |
+                               WIFI7_SPATIAL_CAP_SOUNDING |
+                               WIFI7_SPATIAL_CAP_FEEDBACK |
+                               WIFI7_SPATIAL_CAP_DYNAMIC;
+    sdev->config.max_streams = 16;
+    sdev->config.active_streams = 4;
+    sdev->config.min_rssi = -70;
+    sdev->config.update_interval = 100;
+    sdev->config.auto_adjust = true;
+    sdev->config.mu_enabled = true;
+    sdev->config.tracking = true;
+
+    sdev->initialized = true;
+    dev_info(dev->dev, "Spatial stream management initialized\n");
+
+    return 0;
+
+err_beam:
+    kfree(sdev->beamforming.patterns);
+err_csi:
+    kfree(sdev->csi_data.csi);
+err_free:
+    kfree(sdev);
+    return ret;
+}
+EXPORT_SYMBOL(wifi7_spatial_init);
+
+void wifi7_spatial_deinit(struct wifi7_dev *dev)
+{
+    struct wifi7_spatial_dev *sdev = spatial_dev;
+
+    if (!sdev)
+        return;
+
+    sdev->initialized = false;
+
+    /* Cancel workers */
+    cancel_delayed_work_sync(&sdev->workers.csi_work);
+    cancel_delayed_work_sync(&sdev->workers.beam_work);
+    cancel_delayed_work_sync(&sdev->workers.group_work);
+
+    kfree(sdev->mu_mimo.groups);
+    kfree(sdev->beamforming.patterns);
+    kfree(sdev->csi_data.csi);
+    kfree(sdev);
+    spatial_dev = NULL;
+
+    dev_info(dev->dev, "Spatial stream management deinitialized\n");
+}
+EXPORT_SYMBOL(wifi7_spatial_deinit);
+
+/* Module interface */
+int wifi7_spatial_start(struct wifi7_dev *dev)
+{
+    struct wifi7_spatial_dev *sdev = spatial_dev;
+
+    if (!sdev || !sdev->initialized)
+        return -EINVAL;
+
+    /* Start workers */
+    schedule_delayed_work(&sdev->workers.csi_work,
+                         msecs_to_jiffies(sdev->config.update_interval));
+
+    if (sdev->config.tracking)
+        schedule_delayed_work(&sdev->workers.beam_work,
+                            msecs_to_jiffies(sdev->config.beamforming.update_rate));
+
+    if (sdev->config.mu_enabled)
+        schedule_delayed_work(&sdev->workers.group_work,
+                            msecs_to_jiffies(sdev->config.mu_mimo.timeout));
+
+    dev_info(dev->dev, "Spatial stream management started\n");
+    return 0;
+}
+EXPORT_SYMBOL(wifi7_spatial_start);
+
+void wifi7_spatial_stop(struct wifi7_dev *dev)
+{
+    struct wifi7_spatial_dev *sdev = spatial_dev;
+
+    if (!sdev || !sdev->initialized)
+        return;
+
+    /* Cancel workers */
+    cancel_delayed_work_sync(&sdev->workers.csi_work);
+    cancel_delayed_work_sync(&sdev->workers.beam_work);
+    cancel_delayed_work_sync(&sdev->workers.group_work);
+
+    dev_info(dev->dev, "Spatial stream management stopped\n");
+}
+EXPORT_SYMBOL(wifi7_spatial_stop);
+
+/* Configuration interface */
+int wifi7_spatial_set_config(struct wifi7_dev *dev,
+                           struct wifi7_spatial_config *config)
+{
+    struct wifi7_spatial_dev *sdev = spatial_dev;
+    unsigned long flags;
+
+    if (!sdev || !sdev->initialized || !config)
+        return -EINVAL;
+
+    if (!is_valid_stream_count(config->max_streams))
+        return -EINVAL;
+
+    spin_lock_irqsave(&sdev->lock, flags);
+    memcpy(&sdev->config, config, sizeof(*config));
+    spin_unlock_irqrestore(&sdev->lock, flags);
+
+    return 0;
+}
+EXPORT_SYMBOL(wifi7_spatial_set_config);
+
+int wifi7_spatial_get_config(struct wifi7_dev *dev,
+                           struct wifi7_spatial_config *config)
+{
+    struct wifi7_spatial_dev *sdev = spatial_dev;
+    unsigned long flags;
+
+    if (!sdev || !sdev->initialized || !config)
+        return -EINVAL;
+
+    spin_lock_irqsave(&sdev->lock, flags);
+    memcpy(config, &sdev->config, sizeof(*config));
+    spin_unlock_irqrestore(&sdev->lock, flags);
+
+    return 0;
+}
+EXPORT_SYMBOL(wifi7_spatial_get_config);
+
+/* CSI interface */
+int wifi7_spatial_update_csi(struct wifi7_dev *dev,
+                           struct wifi7_spatial_csi *csi)
+{
+    struct wifi7_spatial_dev *sdev = spatial_dev;
+
+    if (!sdev || !sdev->initialized || !csi)
+        return -EINVAL;
+
+    if (!is_valid_stream_count(csi->num_streams))
+        return -EINVAL;
+
+    process_csi_update(sdev, csi);
+    return 0;
+}
+EXPORT_SYMBOL(wifi7_spatial_update_csi);
+
+int wifi7_spatial_get_csi(struct wifi7_dev *dev,
+                         struct wifi7_spatial_csi *csi)
+{
+    struct wifi7_spatial_dev *sdev = spatial_dev;
+    unsigned long flags;
+    int ret = -ENOENT;
+    int i;
+
+    if (!sdev || !sdev->initialized || !csi)
+        return -EINVAL;
+
+    spin_lock_irqsave(&sdev->csi_data.lock, flags);
+
+    /* Find most recent CSI entry */
+    u32 latest_time = 0;
+    int latest_idx = -1;
+
+    for (i = 0; i < sdev->csi_data.num_entries; i++) {
+        if (sdev->csi_data.csi[i].timestamp > latest_time) {
+            latest_time = sdev->csi_data.csi[i].timestamp;
+            latest_idx = i;
+        }
+    }
+
+    if (latest_idx >= 0) {
+        memcpy(csi, &sdev->csi_data.csi[latest_idx], sizeof(*csi));
+        ret = 0;
+    }
+
+    spin_unlock_irqrestore(&sdev->csi_data.lock, flags);
+    return ret;
+}
+EXPORT_SYMBOL(wifi7_spatial_get_csi);
+
+/* Beamforming interface */
+int wifi7_spatial_add_beam(struct wifi7_dev *dev,
+                         struct wifi7_spatial_beam *beam)
+{
+    struct wifi7_spatial_dev *sdev = spatial_dev;
+
+    if (!sdev || !sdev->initialized || !beam)
+        return -EINVAL;
+
+    return update_beam_pattern(sdev, beam);
+}
+EXPORT_SYMBOL(wifi7_spatial_add_beam);
+
+int wifi7_spatial_del_beam(struct wifi7_dev *dev, u8 pattern_id)
+{
+    struct wifi7_spatial_dev *sdev = spatial_dev;
+    unsigned long flags;
+
+    if (!sdev || !sdev->initialized)
+        return -EINVAL;
+
+    if (!is_valid_pattern_id(pattern_id))
+        return -EINVAL;
+
+    spin_lock_irqsave(&sdev->beamforming.lock, flags);
+    memset(&sdev->beamforming.patterns[pattern_id], 0,
+           sizeof(struct wifi7_spatial_beam));
+    spin_unlock_irqrestore(&sdev->beamforming.lock, flags);
+
+    return 0;
+}
+EXPORT_SYMBOL(wifi7_spatial_del_beam);
+
+/* MU-MIMO interface */
+int wifi7_spatial_create_group(struct wifi7_dev *dev,
+                             struct wifi7_spatial_group *group)
+{
+    struct wifi7_spatial_dev *sdev = spatial_dev;
+
+    if (!sdev || !sdev->initialized || !group)
+        return -EINVAL;
+
+    return update_mu_group(sdev, group);
+}
+EXPORT_SYMBOL(wifi7_spatial_create_group);
+
+int wifi7_spatial_delete_group(struct wifi7_dev *dev, u8 group_id)
+{
+    struct wifi7_spatial_dev *sdev = spatial_dev;
+    unsigned long flags;
+
+    if (!sdev || !sdev->initialized)
+        return -EINVAL;
+
+    if (!is_valid_group_id(group_id))
+        return -EINVAL;
+
+    spin_lock_irqsave(&sdev->mu_mimo.lock, flags);
+    memset(&sdev->mu_mimo.groups[group_id], 0,
+           sizeof(struct wifi7_spatial_group));
+    spin_unlock_irqrestore(&sdev->mu_mimo.lock, flags);
+
+    return 0;
+}
+EXPORT_SYMBOL(wifi7_spatial_delete_group);
+
+/* Statistics interface */
+int wifi7_spatial_get_stats(struct wifi7_dev *dev,
+                          struct wifi7_spatial_stats *stats)
+{
+    struct wifi7_spatial_dev *sdev = spatial_dev;
+    unsigned long flags;
+
+    if (!sdev || !sdev->initialized || !stats)
+        return -EINVAL;
+
+    spin_lock_irqsave(&sdev->lock, flags);
+    memcpy(stats, &sdev->stats, sizeof(*stats));
+    spin_unlock_irqrestore(&sdev->lock, flags);
+
+    return 0;
+}
+EXPORT_SYMBOL(wifi7_spatial_get_stats);
+
+int wifi7_spatial_clear_stats(struct wifi7_dev *dev)
+{
+    struct wifi7_spatial_dev *sdev = spatial_dev;
+    unsigned long flags;
+
+    if (!sdev || !sdev->initialized)
+        return -EINVAL;
+
+    spin_lock_irqsave(&sdev->lock, flags);
+    memset(&sdev->stats, 0, sizeof(sdev->stats));
+    spin_unlock_irqrestore(&sdev->lock, flags);
+
+    return 0;
+}
+EXPORT_SYMBOL(wifi7_spatial_clear_stats);
+
+/* Module parameters */
+static bool spatial_auto_adjust = true;
+module_param(spatial_auto_adjust, bool, 0644);
+MODULE_PARM_DESC(spatial_auto_adjust, "Enable automatic stream adjustment");
+
+static bool spatial_mu_enable = true;
+module_param(spatial_mu_enable, bool, 0644);
+MODULE_PARM_DESC(spatial_mu_enable, "Enable MU-MIMO");
+
+static bool spatial_tracking = true;
+module_param(spatial_tracking, bool, 0644);
+MODULE_PARM_DESC(spatial_tracking, "Enable beam tracking");
+
+/* Module initialization */
+static int __init wifi7_spatial_init_module(void)
+{
+    pr_info("WiFi 7 spatial stream management loaded\n");
     return 0;
 }
 
-static void __exit wifi7_sr_exit_module(void)
+static void __exit wifi7_spatial_exit_module(void)
 {
-    pr_info("WiFi 7 Spatial Reuse unloaded\n");
+    pr_info("WiFi 7 spatial stream management unloaded\n");
 }
 
-module_init(wifi7_sr_init_module);
-module_exit(wifi7_sr_exit_module);
+module_init(wifi7_spatial_init_module);
+module_exit(wifi7_spatial_exit_module);
 
 MODULE_LICENSE("MIT");
 MODULE_AUTHOR("Fayssal Chokri <fayssalchokri@gmail.com>");
-MODULE_DESCRIPTION("WiFi 7 Spatial Reuse");
+MODULE_DESCRIPTION("WiFi 7 Spatial Stream Management");
 MODULE_VERSION("1.0"); 

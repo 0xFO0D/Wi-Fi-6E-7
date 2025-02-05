@@ -98,7 +98,8 @@ obj-$(CONFIG_WIFI7) += \
     src/mac/wifi7_qos.o \
     src/mac/wifi7_ba.o \
     src/mac/wifi7_aggregation.o \
-    src/regulatory/wifi7_afc.o \
+    src/mac/wifi7_spatial.o \
+    src/vendors/tplink/wifi7_tplink.o \
     src/phy/phy_core.o \
     src/dma/dma_core.o \
     src/hal/wifi7_rf.o \
