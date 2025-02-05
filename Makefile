@@ -95,27 +95,15 @@ EXTRA_CFLAGS += -I$(src)/include
 
 obj-$(CONFIG_WIFI7) += \
     src/core/wifi7_core.o \
+    src/mac/wifi7_mac.o \
     src/mac/wifi7_qos.o \
     src/mac/wifi7_ba.o \
     src/mac/wifi7_aggregation.o \
-    src/mac/wifi7_spatial.o \
-    src/vendors/tplink/wifi7_tplink.o \
-    src/phy/phy_core.o \
-    src/dma/dma_core.o \
-    src/hal/wifi7_rf.o \
-    src/regulatory/wifi7_reg.o \
-    src/power/wifi7_power.o \
-    src/power/power_mgmt.o \
-    src/power/power_stats.o \
-    src/power/power_debug.o \
-    src/power/power_thermal.o \
-    src/power/power_profile.o \
-    src/power/power_domain.o \
-    src/power/power_dvfs.o \
-    src/mac/wifi7_rate.o
+    src/regulatory/wifi7_afc.o \
+    src/managh_usb&cards_suprtd/usb/usb_driver.o \
+    src/managh_usb&cards_suprtd/firmware/firmware_loader.o
 
-ccflags-y := -DDEBUG -g -Wall -Werror
-ldflags-y := -T$(src)/wifi7.lds
+ccflags-y += -I$(src)/include -DDEBUG
 
 # Optional features
 wifi7-$(CONFIG_WIFI7_MLO) += src/mac/wifi7_mac_mlo.o
