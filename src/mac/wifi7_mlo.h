@@ -147,4 +147,12 @@ int wifi7_mlo_get_stats(struct wifi7_dev *dev,
                        struct wifi7_mlo_stats *stats);
 int wifi7_mlo_clear_stats(struct wifi7_dev *dev);
 
+/* EMLMR functions */
+int wifi7_emlmr_init(struct wifi7_dev *dev);
+void wifi7_emlmr_deinit(struct wifi7_dev *dev);
+int wifi7_emlmr_start(struct wifi7_dev *dev);
+void wifi7_emlmr_stop(struct wifi7_dev *dev);
+int wifi7_emlmr_switch_link(struct wifi7_dev *dev, u8 new_link);
+int wifi7_emlmr_get_status(struct wifi7_dev *dev, struct wifi7_mlo_metrics *metrics);
+
 #endif /* __WIFI7_MLO_H */ 

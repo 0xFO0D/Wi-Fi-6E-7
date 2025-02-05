@@ -15,6 +15,7 @@
 #include <linux/ktime.h>
 #include "wifi7_mlo.h"
 #include "wifi7_mac.h"
+#include "../hal/wifi7_rf.h"
 
 /* MLO device state */
 struct wifi7_mlo {
@@ -358,4 +359,191 @@ module_exit(wifi7_mlo_exit_module);
 MODULE_LICENSE("MIT");
 MODULE_AUTHOR("Fayssal Chokri <fayssalchokri@gmail.com>");
 MODULE_DESCRIPTION("WiFi 7 MLO Management");
-MODULE_VERSION("1.0"); 
+MODULE_VERSION("1.0");
+
+/* EMLMR state machine states */
+#define EMLMR_STATE_IDLE      0
+#define EMLMR_STATE_SETUP     1
+#define EMLMR_STATE_ACTIVE    2
+#define EMLMR_STATE_TEARDOWN  3
+#define EMLMR_STATE_ERROR     4
+
+struct wifi7_emlmr_state {
+    u8 state;
+    u8 num_active_links;
+    u32 active_link_mask;
+    u8 primary_link;
+    u8 transition_delay;
+    bool pad_present;
+    u32 capabilities;
+    spinlock_t lock;
+};
+
+static struct wifi7_emlmr_state emlmr_state;
+
+static int wifi7_emlmr_setup_link(struct wifi7_dev *dev, u8 link_id)
+{
+    struct wifi7_mlo_link_config *link;
+    int ret;
+
+    link = &dev->mlo.config.links[link_id];
+    if (!link->enabled)
+        return -EINVAL;
+
+    ret = wifi7_rf_setup_link(dev, link_id, link->band,
+                             link->center_freq, link->width,
+                             link->primary_chan, link->nss);
+    if (ret)
+        return ret;
+
+    emlmr_state.active_link_mask |= BIT(link_id);
+    emlmr_state.num_active_links++;
+
+    return 0;
+}
+
+static void wifi7_emlmr_teardown_link(struct wifi7_dev *dev, u8 link_id)
+{
+    wifi7_rf_teardown_link(dev, link_id);
+    emlmr_state.active_link_mask &= ~BIT(link_id);
+    emlmr_state.num_active_links--;
+}
+
+int wifi7_emlmr_init(struct wifi7_dev *dev)
+{
+    spin_lock_init(&emlmr_state.lock);
+    emlmr_state.state = EMLMR_STATE_IDLE;
+    emlmr_state.num_active_links = 0;
+    emlmr_state.active_link_mask = 0;
+    emlmr_state.primary_link = 0;
+    emlmr_state.transition_delay = 0;
+    emlmr_state.pad_present = false;
+    emlmr_state.capabilities = dev->mlo.config.capabilities;
+
+    return 0;
+}
+
+void wifi7_emlmr_deinit(struct wifi7_dev *dev)
+{
+    unsigned long flags;
+    u8 link_id;
+
+    spin_lock_irqsave(&emlmr_state.lock, flags);
+
+    if (emlmr_state.state == EMLMR_STATE_ACTIVE) {
+        for_each_set_bit(link_id, (unsigned long *)&emlmr_state.active_link_mask,
+                        WIFI7_MAX_LINKS) {
+            wifi7_emlmr_teardown_link(dev, link_id);
+        }
+    }
+
+    emlmr_state.state = EMLMR_STATE_IDLE;
+    spin_unlock_irqrestore(&emlmr_state.lock, flags);
+}
+
+int wifi7_emlmr_start(struct wifi7_dev *dev)
+{
+    unsigned long flags;
+    int ret = 0;
+    u8 link_id;
+
+    spin_lock_irqsave(&emlmr_state.lock, flags);
+
+    if (!(emlmr_state.capabilities & WIFI7_MLO_CAP_EMLMR)) {
+        ret = -ENOTSUP;
+        goto out;
+    }
+
+    if (emlmr_state.state != EMLMR_STATE_IDLE) {
+        ret = -EBUSY;
+        goto out;
+    }
+
+    emlmr_state.state = EMLMR_STATE_SETUP;
+
+    for (link_id = 0; link_id < dev->mlo.config.num_links; link_id++) {
+        if (dev->mlo.config.links[link_id].enabled) {
+            ret = wifi7_emlmr_setup_link(dev, link_id);
+            if (ret) {
+                emlmr_state.state = EMLMR_STATE_ERROR;
+                goto out;
+            }
+        }
+    }
+
+    emlmr_state.state = EMLMR_STATE_ACTIVE;
+
+out:
+    spin_unlock_irqrestore(&emlmr_state.lock, flags);
+    return ret;
+}
+
+void wifi7_emlmr_stop(struct wifi7_dev *dev)
+{
+    unsigned long flags;
+    u8 link_id;
+
+    spin_lock_irqsave(&emlmr_state.lock, flags);
+
+    if (emlmr_state.state == EMLMR_STATE_ACTIVE) {
+        emlmr_state.state = EMLMR_STATE_TEARDOWN;
+
+        for_each_set_bit(link_id, (unsigned long *)&emlmr_state.active_link_mask,
+                        WIFI7_MAX_LINKS) {
+            wifi7_emlmr_teardown_link(dev, link_id);
+        }
+
+        emlmr_state.state = EMLMR_STATE_IDLE;
+    }
+
+    spin_unlock_irqrestore(&emlmr_state.lock, flags);
+}
+
+int wifi7_emlmr_switch_link(struct wifi7_dev *dev, u8 new_link)
+{
+    unsigned long flags;
+    int ret = 0;
+
+    spin_lock_irqsave(&emlmr_state.lock, flags);
+
+    if (emlmr_state.state != EMLMR_STATE_ACTIVE) {
+        ret = -EINVAL;
+        goto out;
+    }
+
+    if (!(emlmr_state.active_link_mask & BIT(new_link))) {
+        ret = -EINVAL;
+        goto out;
+    }
+
+    emlmr_state.primary_link = new_link;
+    wifi7_rf_switch_primary(dev, new_link);
+
+out:
+    spin_unlock_irqrestore(&emlmr_state.lock, flags);
+    return ret;
+}
+
+int wifi7_emlmr_get_status(struct wifi7_dev *dev, 
+                          struct wifi7_mlo_metrics *metrics)
+{
+    unsigned long flags;
+    u8 link_id;
+
+    spin_lock_irqsave(&emlmr_state.lock, flags);
+
+    for_each_set_bit(link_id, (unsigned long *)&emlmr_state.active_link_mask,
+                     WIFI7_MAX_LINKS) {
+        wifi7_rf_get_link_metrics(dev, link_id, &metrics[link_id]);
+    }
+
+    spin_unlock_irqrestore(&emlmr_state.lock, flags);
+    return 0;
+}
+
+EXPORT_SYMBOL(wifi7_emlmr_init);
+EXPORT_SYMBOL(wifi7_emlmr_deinit);
+EXPORT_SYMBOL(wifi7_emlmr_start);
+EXPORT_SYMBOL(wifi7_emlmr_stop);
+EXPORT_SYMBOL(wifi7_emlmr_switch_link);
+EXPORT_SYMBOL(wifi7_emlmr_get_status); 

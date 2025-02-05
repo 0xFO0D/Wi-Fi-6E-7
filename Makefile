@@ -14,6 +14,12 @@ wifi67-objs := \
     src/core/ops.o \
     src/hal/hardware.o \
     src/mac/mac_core.o \
+    src/mac/wifi7_mac.o \
+    src/mac/wifi7_mlo.o \
+    src/mac/wifi7_spatial.o \
+    src/mac/wifi7_rate.o \
+    src/mac/wifi7_qos.o \
+    src/mac/wifi7_ba.o \
     src/phy/phy_core.o \
     src/dma/dma_core.o \
     src/dma/dma_monitor.o \
@@ -31,6 +37,7 @@ wifi67-objs := \
     src/power/power_profile.o \
     src/power/power_domain.o \
     src/power/power_dvfs.o \
+    src/hal/wifi7_rf.o \
     managh_usb&cards_suprtd/firmware/fw_common.o \
     managh_usb&cards_suprtd/firmware/fw_secure.o \
     managh_usb&cards_suprtd/firmware/fw_keys.o \
