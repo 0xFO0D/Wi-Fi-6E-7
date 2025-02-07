@@ -14,9 +14,11 @@
 #include <linux/completion.h>
 #include <linux/ktime.h>
 #include <linux/math64.h>
+#include <linux/slab.h>
 #include "wifi7_rate.h"
 #include "wifi7_mac.h"
 #include "../hal/wifi7_rf.h"
+#include "wifi7_mlo.h"
 
 /* Device state */
 struct wifi7_rate_dev {
@@ -76,6 +78,9 @@ static inline bool is_valid_gi(u8 gi)
 static void init_rate_table(struct wifi7_rate_table *table)
 {
     int i;
+    struct wifi7_rate_entry *entry;
+
+    memset(table, 0, sizeof(*table));
 
     table->max_mcs = WIFI7_RATE_MAX_MCS;
     table->max_nss = WIFI7_RATE_MAX_NSS;
@@ -95,20 +100,20 @@ static void init_rate_table(struct wifi7_rate_table *table)
 
     /* Initialize rate entries */
     for (i = 0; i <= WIFI7_RATE_MAX_MCS; i++) {
-        struct wifi7_rate_entry *entry = &table->entries[i];
+        entry = &table->entries[i];
         entry->mcs = i;
         entry->nss = 1;
-        entry->bw = 20;
-        entry->gi = 0;
+        entry->bw = 80;  /* Default to 80MHz */
+        entry->gi = 1;   /* Default to short GI */
         entry->dcm = 0;
         entry->flags = WIFI7_RATE_FLAG_EHT;
-        entry->bitrate = wifi7_calculate_bitrate(i, 1, 20, 0);
+        entry->bitrate = wifi7_calculate_bitrate(i, 1, 80, 1);
         entry->tries = 0;
         entry->success = 0;
         entry->attempts = 0;
         entry->last_success = 0;
         entry->last_attempt = 0;
-        entry->perfect_tx_time = wifi7_calculate_tx_time(i, 1, 20, 0);
+        entry->perfect_tx_time = wifi7_calculate_tx_time(i, 1, 80, 1);
         entry->max_tp_rate = 0;
         entry->valid = true;
     }
@@ -119,6 +124,7 @@ static void update_rate_stats(struct wifi7_rate_dev *dev,
                             bool success)
 {
     unsigned long flags;
+    u32 now = jiffies_to_msecs(jiffies);
 
     spin_lock_irqsave(&dev->lock, flags);
 
@@ -126,9 +132,9 @@ static void update_rate_stats(struct wifi7_rate_dev *dev,
     rate->attempts++;
     if (success) {
         rate->success++;
-        rate->last_success = jiffies;
+        rate->last_success = now;
     }
-    rate->last_attempt = jiffies;
+    rate->last_attempt = now;
 
     /* Update global statistics */
     dev->stats.tx_packets++;
@@ -149,28 +155,19 @@ static struct wifi7_rate_entry *select_rate_minstrel(struct wifi7_rate_dev *dev,
     struct wifi7_rate_table *table = &dev->rate_table.table;
     struct wifi7_rate_entry *best_rate = NULL;
     unsigned long flags;
-    u32 max_tp = 0;
     int i;
 
     spin_lock_irqsave(&dev->rate_table.lock, flags);
 
-    /* Find rate with highest throughput */
+    /* Find rate with best throughput */
     for (i = 0; i <= table->max_mcs; i++) {
         struct wifi7_rate_entry *rate = &table->entries[i];
-        u32 tp;
-
+        
         if (!rate->valid)
             continue;
 
-        if (rate->attempts == 0)
-            continue;
-
-        /* Calculate throughput */
-        tp = rate->bitrate * rate->success / rate->attempts;
-        if (tp > max_tp) {
-            max_tp = tp;
+        if (!best_rate || rate->max_tp_rate > best_rate->max_tp_rate)
             best_rate = rate;
-        }
     }
 
     spin_unlock_irqrestore(&dev->rate_table.lock, flags);

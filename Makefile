@@ -99,6 +99,8 @@ obj-$(CONFIG_WIFI7) += \
     src/mac/wifi7_qos.o \
     src/mac/wifi7_ba.o \
     src/mac/wifi7_aggregation.o \
+    src/mac/wifi7_rate.o \
+    src/mac/wifi7_mlo.o \
     src/regulatory/wifi7_afc.o \
     src/managh_usb&cards_suprtd/usb/usb_driver.o \
     src/managh_usb&cards_suprtd/firmware/firmware_loader.o
