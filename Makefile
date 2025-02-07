@@ -40,6 +40,9 @@ wifi67-objs := \
     src/power/power_domain.o \
     src/power/power_dvfs.o \
     src/hal/wifi7_rf.o \
+    automotive/v2x/wifi7_v2x.o \
+    automotive/can/wifi7_can.o \
+    automotive/signal/wifi7_auto_signal.o \
     managh_usb&cards_suprtd/firmware/fw_common.o \
     managh_usb&cards_suprtd/firmware/fw_secure.o \
     managh_usb&cards_suprtd/firmware/fw_keys.o \
@@ -75,6 +78,9 @@ obj-m += crypto_test.o
 obj-m += power_test.o
 obj-m += rate_test.o
 obj-m += qos_test.o
+obj-m += v2x_test.o
+obj-m += can_test.o
+obj-m += auto_signal_test.o
 
 test_framework-objs := managh_usb&cards_suprtd/tests/test_framework.o
 dma_test-objs := managh_usb&cards_suprtd/tests/dma_test.o
@@ -85,10 +91,14 @@ crypto_test-objs := managh_usb&cards_suprtd/tests/crypto_test.o
 power_test-objs := managh_usb&cards_suprtd/tests/power_test.o
 rate_test-objs := managh_usb&cards_suprtd/tests/rate_test.o
 qos_test-objs := managh_usb&cards_suprtd/tests/qos_test.o
+v2x_test-objs := automotive/tests/v2x_test.o
+can_test-objs := automotive/tests/can_test.o
+auto_signal_test-objs := automotive/tests/auto_signal_test.o
 
 # Test targets
 TEST_MODULES := test_framework.ko dma_test.ko mac_test.ko phy_test.ko \
-                firmware_test.ko crypto_test.ko power_test.ko rate_test.ko qos_test.ko
+                firmware_test.ko crypto_test.ko power_test.ko rate_test.ko \
+                qos_test.ko v2x_test.ko can_test.ko auto_signal_test.ko
 
 # Kernel build directory
 KDIR ?= /lib/modules/$(shell uname -r)/build
@@ -116,6 +126,9 @@ wifi7-$(CONFIG_WIFI7_MLO) += src/mac/wifi7_mac_mlo.o
 wifi7-$(CONFIG_WIFI7_QOS) += src/mac/wifi7_mac_qos.o
 wifi7-$(CONFIG_WIFI7_POWER) += src/mac/wifi7_mac_power.o
 wifi7-$(CONFIG_WIFI7_DEBUG) += src/debug/wifi7_debug.o
+wifi7-$(CONFIG_WIFI7_V2X) += automotive/v2x/wifi7_v2x.o
+wifi7-$(CONFIG_WIFI7_CAN) += automotive/can/wifi7_can.o
+wifi7-$(CONFIG_WIFI7_AUTO_SIGNAL) += automotive/signal/wifi7_auto_signal.o
 
 # Hardware support
 wifi7-$(CONFIG_WIFI7_PCI) += src/pci/wifi7_pci.o
