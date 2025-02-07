@@ -81,6 +81,7 @@ obj-m += qos_test.o
 obj-m += v2x_test.o
 obj-m += can_test.o
 obj-m += auto_signal_test.o
+obj-m += auto_test.o
 
 test_framework-objs := managh_usb&cards_suprtd/tests/test_framework.o
 dma_test-objs := managh_usb&cards_suprtd/tests/dma_test.o
@@ -94,11 +95,12 @@ qos_test-objs := managh_usb&cards_suprtd/tests/qos_test.o
 v2x_test-objs := automotive/tests/v2x_test.o
 can_test-objs := automotive/tests/can_test.o
 auto_signal_test-objs := automotive/tests/auto_signal_test.o
+auto_test-objs := managh_usb&cards_suprtd/tests/auto_test.o
 
 # Test targets
 TEST_MODULES := test_framework.ko dma_test.ko mac_test.ko phy_test.ko \
                 firmware_test.ko crypto_test.ko power_test.ko rate_test.ko \
-                qos_test.ko v2x_test.ko can_test.ko auto_signal_test.ko
+                qos_test.ko v2x_test.ko can_test.ko auto_signal_test.ko auto_test.ko
 
 # Kernel build directory
 KDIR ?= /lib/modules/$(shell uname -r)/build
@@ -212,5 +214,14 @@ monitor: modules
 	@cat /sys/kernel/debug/wifi67_eventlog/log
 	@cat /sys/kernel/debug/wifi67_attest/status
 	@sudo rmmod wifi67
+
+# Automotive components
+obj-m += wifi7_v2x.o
+obj-m += wifi7_can.o
+obj-m += wifi7_auto_signal.o
+
+wifi7_v2x-objs := automotive/v2x/wifi7_v2x.o
+wifi7_can-objs := automotive/can/wifi7_can.o
+wifi7_auto_signal-objs := automotive/signal/wifi7_auto_signal.o
 
 .PHONY: all modules clean test install debugfs monitor
