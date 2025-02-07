@@ -15,12 +15,18 @@
 #include <linux/init.h>
 #include <linux/skbuff.h>
 #include <linux/ieee80211.h>
+#include <linux/etherdevice.h>
+#include <linux/random.h>
+#include <linux/crc32.h>
+#include <linux/completion.h>
+#include <linux/ktime.h>
+#include <linux/math64.h>
 #include <linux/slab.h>
 #include <linux/debugfs.h>
-#include <linux/math64.h>
 #include <net/dsfield.h>
 #include "wifi7_qos.h"
 #include "wifi7_mac.h"
+#include "wifi7_mlo.h"
 
 /* Token bucket parameters */
 #define WIFI7_TOKEN_SHIFT      20

@@ -1,9 +1,6 @@
 /*
- * WiFi 7 QoS Management Header
+ * WiFi 7 QoS and Traffic Management
  * Copyright (c) 2024 Fayssal Chokri <fayssalchokri@gmail.com>
- *
- * Defines the interface and data structures for WiFi 7 QoS management,
- * including traffic classification, queue management, and MLO support.
  */
 
 #ifndef __WIFI7_QOS_H
@@ -11,207 +8,119 @@
 
 #include <linux/types.h>
 #include <linux/skbuff.h>
-#include <linux/ieee80211.h>
 #include "../core/wifi7_core.h"
 
-/*
- * Access Categories in order of increasing priority
- * Follows 802.11e/802.11ax QoS specifications
- */
-#define WIFI7_AC_BK     0  /* Background */
-#define WIFI7_AC_BE     1  /* Best Effort */
-#define WIFI7_AC_VI     2  /* Video */
-#define WIFI7_AC_VO     3  /* Voice */
-#define WIFI7_NUM_ACS   4
+/* QoS capabilities */
+#define WIFI7_QOS_CAP_MULTI_TID    BIT(0)  /* Multi-TID support */
+#define WIFI7_QOS_CAP_MLO          BIT(1)  /* MLO QoS support */
+#define WIFI7_QOS_CAP_LATENCY      BIT(2)  /* Latency-based QoS */
+#define WIFI7_QOS_CAP_DYNAMIC      BIT(3)  /* Dynamic prioritization */
+#define WIFI7_QOS_CAP_ADVANCED_Q   BIT(4)  /* Advanced queue management */
+#define WIFI7_QOS_CAP_ADMISSION    BIT(5)  /* Admission control */
+#define WIFI7_QOS_CAP_SCHEDULER    BIT(6)  /* Advanced scheduler */
+#define WIFI7_QOS_CAP_AIRTIME      BIT(7)  /* Airtime fairness */
 
-/*
- * Traffic Identifier (TID) definitions
- * TIDs 0-7 map to user priorities
- * TID 8 reserved for management frames
- */
-#define WIFI7_TID_MAX   7
-#define WIFI7_TID_MASK  0x7
-#define WIFI7_MGMT_TID  8
-#define WIFI7_NUM_TIDS  9
+/* QoS TID definitions */
+#define WIFI7_QOS_TID_MAX          7
+#define WIFI7_QOS_TID_VOICE        7  /* Highest priority */
+#define WIFI7_QOS_TID_VIDEO        6
+#define WIFI7_QOS_TID_BESTEFFORT   0
+#define WIFI7_QOS_TID_BACKGROUND   1
 
-/*
- * Queue and buffer management limits
- * Sized to handle typical traffic patterns while preventing buffer bloat
- */
-#define WIFI7_MAX_QUEUES       32
-#define WIFI7_MAX_QUEUE_DEPTH  1024
-#define WIFI7_MIN_QUEUE_DEPTH  64
-#define WIFI7_MAX_AMPDU_LEN    1024
-#define WIFI7_MAX_AMPDU_TIDS   8
+/* QoS queue states */
+#define WIFI7_QUEUE_STOPPED        0
+#define WIFI7_QUEUE_RUNNING        1
+#define WIFI7_QUEUE_BLOCKED        2
+#define WIFI7_QUEUE_SUSPENDED      3
 
-/*
- * Traffic steering modes
- * Different policies for MLO link selection
- */
-#define WIFI7_STEER_NONE       0
-#define WIFI7_STEER_LOAD       1
-#define WIFI7_STEER_LATENCY    2
-#define WIFI7_STEER_AIRTIME    3
-#define WIFI7_STEER_THROUGHPUT 4
-#define WIFI7_STEER_ML         5
-#define WIFI7_STEER_CUSTOM     6
+/* QoS traffic classes */
+#define WIFI7_TC_VOICE             3  /* Highest priority */
+#define WIFI7_TC_VIDEO             2
+#define WIFI7_TC_BESTEFFORT        1
+#define WIFI7_TC_BACKGROUND        0  /* Lowest priority */
 
-/*
- * QoS capability flags
- * Controls features like aggregation and ACK policy
- */
-#define WIFI7_QOS_FLAG_AMPDU   BIT(0)  /* Enable AMPDU aggregation */
-#define WIFI7_QOS_FLAG_AMSDU   BIT(1)  /* Enable AMSDU aggregation */
-#define WIFI7_QOS_FLAG_BLOCK   BIT(2)  /* Use block acknowledgment */
-#define WIFI7_QOS_FLAG_NOACK   BIT(3)  /* No acknowledgment required */
-#define WIFI7_QOS_FLAG_BURST   BIT(4)  /* Allow frame bursting */
-#define WIFI7_QOS_FLAG_LOW_LAT BIT(5)  /* Optimize for low latency */
-#define WIFI7_QOS_FLAG_HIGH_TP BIT(6)  /* Optimize for throughput */
-#define WIFI7_QOS_FLAG_POWER   BIT(7)  /* Power save mode */
-#define WIFI7_QOS_FLAG_ML      BIT(8)  /* ML-based traffic prediction */
-#define WIFI7_QOS_FLAG_SHAPE   BIT(9)  /* Shape-based traffic shaping */
-#define WIFI7_QOS_FLAG_DRR     BIT(10) /* DRR-based traffic shaping */
-#define WIFI7_QOS_FLAG_PREDICT BIT(11) /* ML-based traffic prediction */
-
-/* Traffic classification */
-struct wifi7_tid_config {
-    u8 tid;
-    u8 ac;
-    u8 link_mask;
-    u16 queue_limit;
-    u16 ampdu_limit;
-    u32 flags;
-    u32 min_rate;
-    u32 max_rate;
-    u32 target_latency;
-    bool active;
+/* QoS configuration */
+struct wifi7_qos_config {
+    u32 capabilities;          /* QoS capabilities */
+    bool multi_tid;            /* Multi-TID enabled */
+    bool mlo_qos;             /* MLO QoS enabled */
+    bool dynamic_priority;     /* Dynamic priority enabled */
+    bool admission_control;    /* Admission control enabled */
+    u8 max_queues;            /* Maximum queues */
+    u8 default_tid;           /* Default TID */
+    u32 queue_size_max;       /* Maximum queue size */
+    u32 queue_timeout;        /* Queue timeout in ms */
+    struct {
+        u32 voice_weight;      /* Voice traffic weight */
+        u32 video_weight;      /* Video traffic weight */
+        u32 besteffort_weight; /* Best effort weight */
+        u32 background_weight; /* Background weight */
+    } weights;
 };
 
-/* Queue state tracking */
-struct wifi7_queue_stats {
-    u32 enqueued;
-    u32 dequeued;
-    u32 dropped;
-    u32 rejected;
-    u32 completed;
-    u32 retried;
-    u32 avg_sojourn;
-    u32 avg_latency;
-    u32 peak_latency;
-    u32 bytes_pending;
-    u32 airtime_used;
+/* QoS queue statistics */
+struct wifi7_qos_queue_stats {
+    u32 enqueued;             /* Packets enqueued */
+    u32 dequeued;             /* Packets dequeued */
+    u32 dropped;              /* Packets dropped */
+    u32 rejected;             /* Packets rejected */
+    u32 requeued;            /* Packets requeued */
+    u32 queue_length;        /* Current queue length */
+    u32 queue_time;          /* Average queue time */
+    u32 peak_length;         /* Peak queue length */
+    u32 overflow_count;      /* Queue overflow count */
+    u32 underflow_count;     /* Queue underflow count */
 };
 
-/* Per-link QoS state */
-struct wifi7_link_qos {
-    u8 link_id;
-    u32 active_tids;
-    u32 active_queues;
-    u32 queue_flags[WIFI7_MAX_QUEUES];
-    struct wifi7_queue_stats stats[WIFI7_MAX_QUEUES];
-    spinlock_t lock;
-    
-    /* Traffic monitoring */
-    u32 tx_airtime;
-    u32 rx_airtime;
-    u32 busy_time;
-    u32 tx_bytes;
-    u32 rx_bytes;
-    u32 tx_mpdu;
-    u32 rx_mpdu;
-    u32 tx_ampdu;
-    u32 rx_ampdu;
-    
-    /* Rate control state */
-    u32 current_rate;
-    u32 target_rate;
-    u32 max_rate;
-    u32 min_rate;
-    u8 rate_flags;
-    
-    /* Buffer management */
-    u32 buffer_used;
-    u32 buffer_max;
-    u32 buffer_min;
-    u32 drops_overflow;
-    u32 drops_underrun;
+/* QoS statistics */
+struct wifi7_qos_stats {
+    struct wifi7_qos_queue_stats queue_stats[WIFI7_QOS_TID_MAX + 1];
+    u32 total_enqueued;       /* Total packets enqueued */
+    u32 total_dequeued;       /* Total packets dequeued */
+    u32 total_dropped;        /* Total packets dropped */
+    u32 total_rejected;       /* Total packets rejected */
+    u32 admission_refused;    /* Admission control refusals */
+    u32 priority_changes;     /* Priority changes */
+    u32 scheduler_runs;       /* Scheduler run count */
+    ktime_t last_update;      /* Last statistics update */
 };
 
-/* Multi-TID aggregation state */
-struct wifi7_mtid_state {
-    bool enabled;
-    u8 max_tids;
-    u8 active_tids;
-    u16 max_ampdu;
-    u32 timeout_us;
-    u32 tid_bitmap;
-    u32 last_update;
-    spinlock_t lock;
-};
-
-/* Traffic steering policy */
-struct wifi7_steer_policy {
-    u8 mode;
-    u8 link_weight[WIFI7_MAX_LINKS];
-    u32 load_threshold;
-    u32 latency_threshold;
-    u32 airtime_threshold;
-    u32 rate_threshold;
-    bool active;
-};
-
-/* Main QoS management structure */
-struct wifi7_qos {
-    /* TID management */
-    struct wifi7_tid_config tids[WIFI7_NUM_TIDS];
-    struct wifi7_mtid_state mtid;
-    spinlock_t tid_lock;
-    
-    /* Per-link state */
-    struct wifi7_link_qos links[WIFI7_MAX_LINKS];
-    struct wifi7_steer_policy steer;
-    u32 active_links;
-    
-    /* Queue management */
-    struct sk_buff_head queues[WIFI7_MAX_QUEUES];
-    spinlock_t queue_locks[WIFI7_MAX_QUEUES];
-    u32 queue_mapping[WIFI7_NUM_TIDS];
-    
-    /* Hardware interface */
-    void *hw_queues;
-    void *dma_rings;
-    
-    /* Statistics and monitoring */
-    struct delayed_work stats_work;
-    u32 update_interval;
-    bool stats_enabled;
-    
-    /* Debugging */
-    struct dentry *debugfs_dir;
-    bool debug_enabled;
-};
-
-/* Forward declarations */
-struct wifi7_dev;
-struct wifi7_qos;
-
-/* Public API */
+/* Function prototypes */
 int wifi7_qos_init(struct wifi7_dev *dev);
 void wifi7_qos_deinit(struct wifi7_dev *dev);
 
 int wifi7_qos_start(struct wifi7_dev *dev);
 void wifi7_qos_stop(struct wifi7_dev *dev);
 
-int wifi7_qos_set_config(struct wifi7_dev *dev, void *cfg, size_t len);
-int wifi7_qos_get_config(struct wifi7_dev *dev, void *cfg, size_t len);
+int wifi7_qos_set_config(struct wifi7_dev *dev,
+                        struct wifi7_qos_config *config);
+int wifi7_qos_get_config(struct wifi7_dev *dev,
+                        struct wifi7_qos_config *config);
 
-int wifi7_qos_enqueue(struct wifi7_dev *dev, struct sk_buff *skb);
-struct sk_buff *wifi7_qos_dequeue(struct wifi7_dev *dev, u8 link_id);
+int wifi7_qos_enqueue(struct wifi7_dev *dev,
+                     struct sk_buff *skb,
+                     u8 tid);
+struct sk_buff *wifi7_qos_dequeue(struct wifi7_dev *dev,
+                                 u8 tid);
 
-int wifi7_qos_get_stats(struct wifi7_dev *dev, void *stats, size_t len);
+int wifi7_qos_start_queue(struct wifi7_dev *dev, u8 tid);
+int wifi7_qos_stop_queue(struct wifi7_dev *dev, u8 tid);
+int wifi7_qos_wake_queue(struct wifi7_dev *dev, u8 tid);
+
+int wifi7_qos_get_queue_stats(struct wifi7_dev *dev,
+                             u8 tid,
+                             struct wifi7_qos_queue_stats *stats);
+int wifi7_qos_get_stats(struct wifi7_dev *dev,
+                       struct wifi7_qos_stats *stats);
 int wifi7_qos_clear_stats(struct wifi7_dev *dev);
 
-int wifi7_qos_set_power_mode(struct wifi7_dev *dev, bool enable);
-int wifi7_qos_set_link_mask(struct wifi7_dev *dev, u32 mask);
+/* Debug interface */
+#ifdef CONFIG_WIFI7_QOS_DEBUG
+int wifi7_qos_debugfs_init(struct wifi7_dev *dev);
+void wifi7_qos_debugfs_remove(struct wifi7_dev *dev);
+#else
+static inline int wifi7_qos_debugfs_init(struct wifi7_dev *dev) { return 0; }
+static inline void wifi7_qos_debugfs_remove(struct wifi7_dev *dev) {}
+#endif
 
 #endif /* __WIFI7_QOS_H */ 

@@ -150,7 +150,7 @@ static void update_rate_stats(struct wifi7_rate_dev *dev,
 
 /* Rate selection algorithms */
 static struct wifi7_rate_entry *select_rate_minstrel(struct wifi7_rate_dev *dev,
-                                                   struct sk_buff *skb)
+                                    struct sk_buff *skb)
 {
     struct wifi7_rate_table *table = &dev->rate_table.table;
     struct wifi7_rate_entry *best_rate = NULL;
@@ -158,14 +158,14 @@ static struct wifi7_rate_entry *select_rate_minstrel(struct wifi7_rate_dev *dev,
     int i;
 
     spin_lock_irqsave(&dev->rate_table.lock, flags);
-
+    
     /* Find rate with best throughput */
     for (i = 0; i <= table->max_mcs; i++) {
         struct wifi7_rate_entry *rate = &table->entries[i];
         
         if (!rate->valid)
             continue;
-
+            
         if (!best_rate || rate->max_tp_rate > best_rate->max_tp_rate)
             best_rate = rate;
     }
@@ -175,7 +175,7 @@ static struct wifi7_rate_entry *select_rate_minstrel(struct wifi7_rate_dev *dev,
 }
 
 static struct wifi7_rate_entry *select_rate_pid(struct wifi7_rate_dev *dev,
-                                              struct sk_buff *skb)
+                               struct sk_buff *skb)
 {
     struct wifi7_rate_table *table = &dev->rate_table.table;
     struct wifi7_rate_entry *current_rate;
@@ -203,7 +203,7 @@ static struct wifi7_rate_entry *select_rate_pid(struct wifi7_rate_dev *dev,
 }
 
 static struct wifi7_rate_entry *select_rate_ml(struct wifi7_rate_dev *dev,
-                                             struct sk_buff *skb)
+                              struct sk_buff *skb)
 {
     /* TODO: Implement ML-based rate selection */
     return select_rate_minstrel(dev, skb);
@@ -216,7 +216,7 @@ static void rate_update_work_handler(struct work_struct *work)
     struct wifi7_rate_table *table = &dev->rate_table.table;
     unsigned long flags;
     int i;
-
+    
     if (!dev->initialized)
         return;
 
@@ -229,7 +229,7 @@ static void rate_update_work_handler(struct work_struct *work)
 
         if (!rate->valid)
             continue;
-
+            
         if (rate->attempts == 0)
             continue;
 
@@ -248,7 +248,7 @@ static void rate_update_work_handler(struct work_struct *work)
     dev->stats.last_update = ktime_get();
 
     spin_unlock_irqrestore(&dev->rate_table.lock, flags);
-
+    
     /* Schedule next update */
     if (dev->config.auto_adjust)
         schedule_delayed_work(&dev->workers.update_work,
@@ -259,7 +259,7 @@ static void rate_stats_work_handler(struct work_struct *work)
 {
     struct wifi7_rate_dev *dev = rate_dev;
     unsigned long flags;
-
+    
     if (!dev->initialized)
         return;
 
@@ -286,12 +286,12 @@ int wifi7_rate_init(struct wifi7_dev *dev)
 {
     struct wifi7_rate_dev *rdev;
     int ret;
-
+    
     /* Allocate device context */
     rdev = kzalloc(sizeof(*rdev), GFP_KERNEL);
     if (!rdev)
         return -ENOMEM;
-
+        
     rdev->dev = dev;
     spin_lock_init(&rdev->lock);
     spin_lock_init(&rdev->rate_table.lock);
@@ -314,7 +314,7 @@ int wifi7_rate_init(struct wifi7_dev *dev)
         goto err_free;
     }
     rdev->history.history_size = 1024;
-
+    
     /* Set default configuration */
     rdev->config.algorithm = WIFI7_RATE_ALGO_MINSTREL;
     rdev->config.capabilities = WIFI7_RATE_CAP_MCS_15 |
@@ -342,7 +342,7 @@ int wifi7_rate_init(struct wifi7_dev *dev)
     dev_info(dev->dev, "Rate control initialized\n");
 
     return 0;
-
+    
 err_free:
     kfree(rdev);
     return ret;
@@ -352,10 +352,10 @@ EXPORT_SYMBOL(wifi7_rate_init);
 void wifi7_rate_deinit(struct wifi7_dev *dev)
 {
     struct wifi7_rate_dev *rdev = rate_dev;
-
+    
     if (!rdev)
         return;
-
+        
     rdev->initialized = false;
 
     /* Cancel workers */
@@ -374,10 +374,10 @@ EXPORT_SYMBOL(wifi7_rate_deinit);
 int wifi7_rate_start(struct wifi7_dev *dev)
 {
     struct wifi7_rate_dev *rdev = rate_dev;
-
+    
     if (!rdev || !rdev->initialized)
         return -EINVAL;
-
+        
     /* Start workers */
     schedule_delayed_work(&rdev->workers.update_work,
                          msecs_to_jiffies(rdev->config.update_interval));
@@ -391,10 +391,10 @@ EXPORT_SYMBOL(wifi7_rate_start);
 void wifi7_rate_stop(struct wifi7_dev *dev)
 {
     struct wifi7_rate_dev *rdev = rate_dev;
-
+    
     if (!rdev || !rdev->initialized)
         return;
-
+        
     /* Cancel workers */
     cancel_delayed_work_sync(&rdev->workers.update_work);
     cancel_delayed_work_sync(&rdev->workers.stats_work);
@@ -461,10 +461,10 @@ int wifi7_rate_update_table(struct wifi7_dev *dev,
 {
     struct wifi7_rate_dev *rdev = rate_dev;
     unsigned long flags;
-
+    
     if (!rdev || !rdev->initialized || !table)
         return -EINVAL;
-
+        
     spin_lock_irqsave(&rdev->rate_table.lock, flags);
     memcpy(&rdev->rate_table.table, table, sizeof(*table));
     spin_unlock_irqrestore(&rdev->rate_table.lock, flags);
@@ -532,7 +532,7 @@ int wifi7_rate_get_min_rate(struct wifi7_dev *dev,
     struct wifi7_rate_dev *rdev = rate_dev;
     struct wifi7_rate_table *table = &rdev->rate_table.table;
     unsigned long flags;
-
+    
     if (!rdev || !rdev->initialized || !rate)
         return -EINVAL;
 
