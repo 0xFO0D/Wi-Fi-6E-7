@@ -73,6 +73,7 @@ obj-m += phy_test.o
 obj-m += firmware_test.o
 obj-m += crypto_test.o
 obj-m += power_test.o
+obj-m += rate_test.o
 
 test_framework-objs := managh_usb&cards_suprtd/tests/test_framework.o
 dma_test-objs := managh_usb&cards_suprtd/tests/dma_test.o
@@ -81,10 +82,11 @@ phy_test-objs := managh_usb&cards_suprtd/tests/phy_test.o
 firmware_test-objs := managh_usb&cards_suprtd/tests/firmware_test.o
 crypto_test-objs := managh_usb&cards_suprtd/tests/crypto_test.o
 power_test-objs := managh_usb&cards_suprtd/tests/power_test.o
+rate_test-objs := managh_usb&cards_suprtd/tests/rate_test.o
 
 # Test targets
 TEST_MODULES := test_framework.ko dma_test.ko mac_test.ko phy_test.ko \
-                firmware_test.ko crypto_test.ko power_test.ko
+                firmware_test.ko crypto_test.ko power_test.ko rate_test.ko
 
 # Kernel build directory
 KDIR ?= /lib/modules/$(shell uname -r)/build
