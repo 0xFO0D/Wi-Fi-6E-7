@@ -13,9 +13,12 @@
 #include <linux/crc32.h>
 #include <linux/completion.h>
 #include <linux/ktime.h>
+#include <net/mac80211.h>
 #include "wifi7_mlo.h"
 #include "wifi7_mac.h"
 #include "../hal/wifi7_rf.h"
+#include "../../include/core/wifi67.h"
+#include "../../include/core/mlo.h"
 
 /* MLO device state */
 struct wifi7_mlo {
@@ -546,4 +549,52 @@ EXPORT_SYMBOL(wifi7_emlmr_deinit);
 EXPORT_SYMBOL(wifi7_emlmr_start);
 EXPORT_SYMBOL(wifi7_emlmr_stop);
 EXPORT_SYMBOL(wifi7_emlmr_switch_link);
-EXPORT_SYMBOL(wifi7_emlmr_get_status); 
+EXPORT_SYMBOL(wifi7_emlmr_get_status);
+
+void wifi7_mlo_link_state_change(struct wifi67_priv *priv, u8 link_id,
+                               enum wifi67_mlo_link_state new_state)
+{
+    struct wifi67_mlo_link *link;
+    unsigned long flags;
+
+    spin_lock_irqsave(&priv->mlo_lock, flags);
+    link = wifi67_mlo_get_link_by_id(priv, link_id);
+    if (!link)
+        goto out;
+
+    switch (new_state) {
+    case WIFI67_MLO_LINK_ACTIVE:
+        wifi67_mlo_activate_link(link);
+        break;
+    case WIFI67_MLO_LINK_IDLE:
+        wifi67_mlo_deactivate_link(link);
+        break;
+    case WIFI67_MLO_LINK_ERROR:
+        wifi67_mlo_handle_link_error(link);
+        break;
+    default:
+        break;
+    }
+
+out:
+    spin_unlock_irqrestore(&priv->mlo_lock, flags);
+}
+
+int wifi7_mlo_setup_link_params(struct wifi67_priv *priv, u8 link_id,
+                              struct ieee80211_link_data *link_data)
+{
+    struct wifi67_mlo_link *link;
+    int ret = 0;
+
+    link = wifi67_mlo_get_link_by_id(priv, link_id);
+    if (!link)
+        return -ENODEV;
+
+    if (link->state != WIFI67_MLO_LINK_SETUP)
+        return -EINVAL;
+
+    link_data->hw_link_id = link_id;
+    link_data->valid = true;
+
+    return ret;
+} 

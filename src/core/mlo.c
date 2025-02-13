@@ -49,4 +49,62 @@ void wifi67_mlo_deinit(struct wifi67_priv *priv)
     
     list_for_each_entry_safe(link, tmp, &priv->mlo_links, list)
         wifi67_mlo_remove_link(link);
+}
+
+int wifi67_mlo_activate_link(struct wifi67_mlo_link *link)
+{
+    if (!link || link->state != WIFI67_MLO_LINK_SETUP)
+        return -EINVAL;
+
+    link->state = WIFI67_MLO_LINK_ACTIVE;
+    link->flags |= WIFI67_MLO_LINK_FLAG_ACTIVE;
+    return 0;
+}
+
+int wifi67_mlo_deactivate_link(struct wifi67_mlo_link *link)
+{
+    if (!link || link->state != WIFI67_MLO_LINK_ACTIVE)
+        return -EINVAL;
+
+    link->state = WIFI67_MLO_LINK_IDLE;
+    link->flags &= ~WIFI67_MLO_LINK_FLAG_ACTIVE;
+    return 0;
+}
+
+int wifi67_mlo_handle_link_error(struct wifi67_mlo_link *link)
+{
+    unsigned long flags;
+    int ret = 0;
+
+    if (!link)
+        return -EINVAL;
+
+    spin_lock_irqsave(&link->priv->mlo_lock, flags);
+    
+    if (link->state == WIFI67_MLO_LINK_ERROR) {
+        ret = -EALREADY;
+        goto out;
+    }
+
+    link->state = WIFI67_MLO_LINK_ERROR;
+    link->flags |= WIFI67_MLO_LINK_FLAG_ERROR;
+    
+    if (link->flags & WIFI67_MLO_LINK_FLAG_ACTIVE)
+        link->flags &= ~WIFI67_MLO_LINK_FLAG_ACTIVE;
+
+out:
+    spin_unlock_irqrestore(&link->priv->mlo_lock, flags);
+    return ret;
+}
+
+struct wifi67_mlo_link *wifi67_mlo_get_link_by_id(struct wifi67_priv *priv,
+                                                 u8 link_id)
+{
+    struct wifi67_mlo_link *link;
+
+    list_for_each_entry(link, &priv->mlo_links, list) {
+        if (link->link_id == link_id)
+            return link;
+    }
+    return NULL;
 } 
