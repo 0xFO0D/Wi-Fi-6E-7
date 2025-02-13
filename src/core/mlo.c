@@ -107,4 +107,79 @@ struct wifi67_mlo_link *wifi67_mlo_get_link_by_id(struct wifi67_priv *priv,
             return link;
     }
     return NULL;
+}
+
+int wifi67_mlo_map_tid(struct wifi67_mlo_link *link, u8 tid,
+                      u8 primary_link, u8 secondary_links)
+{
+    unsigned long flags;
+
+    if (!link || tid >= WIFI67_MLO_MAX_TIDS)
+        return -EINVAL;
+
+    if (primary_link >= link->priv->hw_cap.max_mlo_links)
+        return -EINVAL;
+
+    spin_lock_irqsave(&link->priv->mlo_lock, flags);
+    link->tid_maps[tid].primary_link = primary_link;
+    link->tid_maps[tid].secondary_links = secondary_links;
+    link->tid_maps[tid].flags |= WIFI67_MLO_LINK_FLAG_ACTIVE;
+    spin_unlock_irqrestore(&link->priv->mlo_lock, flags);
+
+    return 0;
+}
+
+int wifi67_mlo_unmap_tid(struct wifi67_mlo_link *link, u8 tid)
+{
+    unsigned long flags;
+
+    if (!link || tid >= WIFI67_MLO_MAX_TIDS)
+        return -EINVAL;
+
+    spin_lock_irqsave(&link->priv->mlo_lock, flags);
+    link->tid_maps[tid].primary_link = 0;
+    link->tid_maps[tid].secondary_links = 0;
+    link->tid_maps[tid].flags &= ~WIFI67_MLO_LINK_FLAG_ACTIVE;
+    spin_unlock_irqrestore(&link->priv->mlo_lock, flags);
+
+    return 0;
+}
+
+u8 wifi67_mlo_get_link_for_tid(struct wifi67_mlo_link *link, u8 tid)
+{
+    u8 target_link;
+    unsigned long flags;
+
+    if (!link || tid >= WIFI67_MLO_MAX_TIDS)
+        return 0;
+
+    spin_lock_irqsave(&link->priv->mlo_lock, flags);
+    
+    if (!(link->tid_maps[tid].flags & WIFI67_MLO_LINK_FLAG_ACTIVE)) {
+        target_link = link->link_id;
+    } else {
+        target_link = link->tid_maps[tid].primary_link;
+        
+        if (link->tid_maps[tid].secondary_links != 0) {
+            u8 active_links = link->tid_maps[tid].secondary_links;
+            u8 num_active = hweight8(active_links);
+            
+            if (num_active > 0) {
+                u8 selected = prandom_u32() % (num_active + 1);
+                if (selected > 0) {
+                    int i;
+                    for_each_set_bit(i, (unsigned long *)&active_links, 8) {
+                        selected--;
+                        if (selected == 0) {
+                            target_link = i;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    spin_unlock_irqrestore(&link->priv->mlo_lock, flags);
+    return target_link;
 } 

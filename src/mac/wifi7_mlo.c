@@ -597,4 +597,37 @@ int wifi7_mlo_setup_link_params(struct wifi67_priv *priv, u8 link_id,
     link_data->valid = true;
 
     return ret;
+}
+
+static u8 wifi7_mlo_get_tx_link(struct wifi7_dev *dev, struct sk_buff *skb)
+{
+    struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
+    struct wifi67_mlo_link *link;
+    u8 tid;
+
+    if (!ieee80211_is_data(hdr->frame_control))
+        return dev->mlo->link.active_link;
+
+    tid = skb->priority & IEEE80211_QOS_CTL_TID_MASK;
+    link = wifi67_mlo_get_link_by_id(dev->priv, dev->mlo->link.active_link);
+    if (!link)
+        return dev->mlo->link.active_link;
+
+    return wifi67_mlo_get_link_for_tid(link, tid);
+}
+
+static void wifi7_mlo_tx_handler(struct work_struct *work)
+{
+    struct wifi7_mlo *mlo = container_of(work, struct wifi7_mlo,
+                                       frames.tx_work.work);
+    struct sk_buff *skb;
+    u8 link_id;
+
+    while ((skb = skb_dequeue(&mlo->frames.tx_queue))) {
+        link_id = wifi7_mlo_get_tx_link(mlo->dev, skb);
+        wifi7_mac_tx_frame(mlo->dev, link_id, skb);
+    }
+
+    if (!skb_queue_empty(&mlo->frames.tx_queue))
+        schedule_delayed_work(&mlo->frames.tx_work, 0);
 } 
