@@ -14,6 +14,7 @@ wifi67-objs := \
     src/core/ops.o \
     src/core/pci.o \
     src/core/mlo.o \
+    src/core/emlsr.o \
     src/hal/hardware.o \
     src/mac/mac_core.o \
     src/mac/wifi7_mac.o \
@@ -45,30 +46,30 @@ wifi67-objs := \
     automotive/v2x/wifi7_v2x.o \
     automotive/can/wifi7_can.o \
     automotive/signal/wifi7_auto_signal.o \
-    managh_usb&cards_suprtd/firmware/fw_common.o \
-    managh_usb&cards_suprtd/firmware/fw_secure.o \
-    managh_usb&cards_suprtd/firmware/fw_keys.o \
-    managh_usb&cards_suprtd/firmware/fw_tpm.o \
-    managh_usb&cards_suprtd/firmware/fw_eventlog.o \
-    managh_usb&cards_suprtd/firmware/fw_attest.o \
-    managh_usb&cards_suprtd/firmware/fw_debugfs.o \
-    managh_usb&cards_suprtd/firmware/fw_rollback.o \
-    managh_usb&cards_suprtd/firmware/fw_encrypt.o \
-    managh_usb&cards_suprtd/firmware/fw_policy_sim.o
+    hardware_support/firmware/fw_common.o \
+    hardware_support/firmware/fw_secure.o \
+    hardware_support/firmware/fw_keys.o \
+    hardware_support/firmware/fw_tpm.o \
+    hardware_support/firmware/fw_eventlog.o \
+    hardware_support/firmware/fw_attest.o \
+    hardware_support/firmware/fw_debugfs.o \
+    hardware_support/firmware/fw_rollback.o \
+    hardware_support/firmware/fw_encrypt.o \
+    hardware_support/firmware/fw_policy_sim.o
 
 managh_wifi_usb-objs := \
-    managh_usb&cards_suprtd/usb/usb_driver.o \
-    managh_usb&cards_suprtd/firmware/firmware_loader.o
+    hardware_support/usb/usb_driver.o \
+    hardware_support/firmware/firmware_loader.o
 
 managh_wifi_pci-objs := \
-    managh_usb&cards_suprtd/pci/pci_driver.o \
-    managh_usb&cards_suprtd/firmware/firmware_loader.o
+    hardware_support/pci/pci_driver.o \
+    hardware_support/firmware/firmware_loader.o
 
-test_fw_common-objs := managh_usb&cards_suprtd/firmware/test_fw_common.o
-test_fw_secure-objs := managh_usb&cards_suprtd/firmware/test_fw_secure.o
-test_fw_tpm-objs := managh_usb&cards_suprtd/firmware/test_fw_tpm.o
-test_fw_eventlog-objs := managh_usb&cards_suprtd/firmware/test_fw_eventlog.o
-test_fw_attest-objs := managh_usb&cards_suprtd/firmware/test_fw_attest.o
+test_fw_common-objs := hardware_support/firmware/test_fw_common.o
+test_fw_secure-objs := hardware_support/firmware/test_fw_secure.o
+test_fw_tpm-objs := hardware_support/firmware/test_fw_tpm.o
+test_fw_eventlog-objs := hardware_support/firmware/test_fw_eventlog.o
+test_fw_attest-objs := hardware_support/firmware/test_fw_attest.o
 
 # Test modules
 obj-m += test_framework.o
@@ -85,19 +86,19 @@ obj-m += can_test.o
 obj-m += auto_signal_test.o
 obj-m += auto_test.o
 
-test_framework-objs := managh_usb&cards_suprtd/tests/test_framework.o
-dma_test-objs := managh_usb&cards_suprtd/tests/dma_test.o
-mac_test-objs := managh_usb&cards_suprtd/tests/mac_test.o
-phy_test-objs := managh_usb&cards_suprtd/tests/phy_test.o
-firmware_test-objs := managh_usb&cards_suprtd/tests/firmware_test.o
-crypto_test-objs := managh_usb&cards_suprtd/tests/crypto_test.o
-power_test-objs := managh_usb&cards_suprtd/tests/power_test.o
-rate_test-objs := managh_usb&cards_suprtd/tests/rate_test.o
-qos_test-objs := managh_usb&cards_suprtd/tests/qos_test.o
+test_framework-objs := hardware_support/tests/test_framework.o
+dma_test-objs := hardware_support/tests/dma_test.o
+mac_test-objs := hardware_support/tests/mac_test.o
+phy_test-objs := hardware_support/tests/phy_test.o
+firmware_test-objs := hardware_support/tests/firmware_test.o
+crypto_test-objs := hardware_support/tests/crypto_test.o
+power_test-objs := hardware_support/tests/power_test.o
+rate_test-objs := hardware_support/tests/rate_test.o
+qos_test-objs := hardware_support/tests/qos_test.o
 v2x_test-objs := automotive/tests/v2x_test.o
 can_test-objs := automotive/tests/can_test.o
 auto_signal_test-objs := automotive/tests/auto_signal_test.o
-auto_test-objs := managh_usb&cards_suprtd/tests/auto_test.o
+auto_test-objs := hardware_support/tests/auto_test.o
 
 # Test targets
 TEST_MODULES := test_framework.ko dma_test.ko mac_test.ko phy_test.ko \
@@ -120,8 +121,8 @@ obj-$(CONFIG_WIFI7) += \
     src/mac/wifi7_rate.o \
     src/mac/wifi7_mlo.o \
     src/regulatory/wifi7_afc.o \
-    src/managh_usb&cards_suprtd/usb/usb_driver.o \
-    src/managh_usb&cards_suprtd/firmware/firmware_loader.o
+    src/hardware_support/usb/usb_driver.o \
+    src/hardware_support/firmware/firmware_loader.o
 
 ccflags-y += -I$(src)/include -DDEBUG
 
