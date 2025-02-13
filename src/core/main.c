@@ -8,6 +8,7 @@
 #include "../../include/core/caps.h"
 #include "../../include/core/bands.h"
 #include "../../include/debug/debug.h"
+#include "../../include/core/mlo.h"
 
 /* Function prototypes */
 static int wifi67_probe(struct pci_dev *pdev, const struct pci_device_id *id);
@@ -64,16 +65,25 @@ static int wifi67_probe(struct pci_dev *pdev, const struct pci_device_id *id)
         goto err_deinit_diag;
     }
 
+    /* Initialize MLO subsystem */
+    ret = wifi67_mlo_init(priv);
+    if (ret) {
+        wifi67_debug(priv, WIFI67_DEBUG_ERROR, "Failed to init MLO: %d\n", ret);
+        goto err_deinit_power;
+    }
+
     /* Register with mac80211 */
     ret = ieee80211_register_hw(hw);
     if (ret) {
         wifi67_debug(priv, WIFI67_DEBUG_ERROR, "Failed to register hw: %d\n", ret);
-        goto err_deinit_power;
+        goto err_deinit_mlo;
     }
 
     pci_set_drvdata(pdev, hw);
     return 0;
 
+err_deinit_mlo:
+    wifi67_mlo_deinit(priv);
 err_deinit_power:
     wifi67_power_deinit(priv);
 err_deinit_diag:
@@ -91,6 +101,7 @@ static void wifi67_remove(struct pci_dev *pdev)
     struct wifi67_priv *priv = hw->priv;
 
     ieee80211_unregister_hw(hw);
+    wifi67_mlo_deinit(priv);
     wifi67_power_deinit(priv);
     wifi67_hw_diag_deinit(priv);
     wifi67_cleanup_pci(priv);

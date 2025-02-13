@@ -14,7 +14,8 @@ void wifi67_setup_hw_caps(struct wifi67_priv *priv)
                        WIPHY_FLAG_HAS_REMAIN_ON_CHANNEL |
                        WIPHY_FLAG_SUPPORTS_5_10_MHZ |
                        WIPHY_FLAG_HAS_AP_SME |
-                       WIPHY_FLAG_SUPPORTS_WMM_ADMISSION;
+                       WIPHY_FLAG_SUPPORTS_WMM_ADMISSION |
+                       WIPHY_FLAG_SUPPORTS_MLO;
 
     hw->queues = IEEE80211_NUM_ACS;
     hw->offchannel_tx_hw_queue = IEEE80211_NUM_ACS;
@@ -48,6 +49,10 @@ void wifi67_setup_hw_caps(struct wifi67_priv *priv)
     if (priv->features.has_ofdma) {
         hw->wiphy->flags |= WIPHY_FLAG_SUPPORTS_OFDMA;
     }
+
+    priv->hw_cap.mlo_supported = true;
+    priv->hw_cap.max_mlo_links = 3;  /* Support up to 3 links */
+    priv->hw_cap.mlo_link_setup_time = 10;  /* 10ms link setup time */
 }
 
 void wifi67_setup_band_rates(struct ieee80211_supported_band *sband,

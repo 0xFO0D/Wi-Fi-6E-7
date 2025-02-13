@@ -12,6 +12,8 @@ wifi67-objs := \
     src/core/bands.o \
     src/core/caps.o \
     src/core/ops.o \
+    src/core/pci.o \
+    src/core/mlo.o \
     src/hal/hardware.o \
     src/mac/mac_core.o \
     src/mac/wifi7_mac.o \
