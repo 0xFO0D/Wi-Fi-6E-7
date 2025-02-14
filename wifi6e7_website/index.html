@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wi-Fi 6E/7 Driver Project</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="crt-overlay"></div>
+    <div class="scanline"></div>
+    <div class="terminal-container">
+        <nav class="retro-nav">
+            <div class="nav-item active" data-section="home">HOME</div>
+            <div class="nav-item" data-section="arch">ARCHITECTURE</div>
+            <div class="nav-item" data-section="features">FEATURES</div>
+            <div class="nav-item" data-section="docs">DOCUMENTATION</div>
+            <div class="nav-item" data-section="about">ABOUT</div>
+        </nav>
+
+        <main class="content">
+            <section id="home" class="active">
+                <div class="ascii-art">
+                    <pre class="logo">
+ __      ___     _____ _    ____ _____ _____ 
+ \ \    / (_)   |  ___(_)  / ___|___  |___  |
+  \ \  / / _    | |_  | |  \___ \  / /  / / 
+   \ \/ / | |   |  _| | |   ___) |/ /  / /  
+    \__/  |_|   |_|   |_|  |____//_/  /_/   
+                                            
+    </pre>
+                </div>
+                <div class="retro-box">
+                    <h1>Wi-Fi 6E/7 Linux Driver Project</h1>
+                    <p class="blink">> A next-generation wireless driver implementation_</p>
+                </div>
+                <div class="grid-container">
+                    <div class="grid-item">
+                        <h2>MLO Support</h2>
+                        <div class="cube">
+                            <div class="face front">MLO</div>
+                            <div class="face back">320MHz</div>
+                            <div class="face right">4K-QAM</div>
+                            <div class="face left">16SS</div>
+                            <div class="face top">EHT</div>
+                            <div class="face bottom">AFC</div>
+                        </div>
+                    </div>
+                    <div class="grid-item">
+                        <h2>Key Features</h2>
+                        <ul class="retro-list">
+                            <li>Multi-Link Operation</li>
+                            <li>320MHz Channels</li>
+                            <li>4K QAM Modulation</li>
+                            <li>Up to 16 Spatial Streams</li>
+                            <li>Enhanced Security</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+            <section id="arch">
+                <h2>Architecture Overview</h2>
+                <div class="arch-diagram">
+                    <svg class="arch-svg" viewBox="0 0 800 600">
+                        <!-- Core Components -->
+                        <g class="core-components">
+                            <rect x="300" y="50" width="200" height="80" class="module"/>
+                            <text x="400" y="90" class="module-text">Core Layer</text>
+                            <path d="M400,130 L400,180" class="connection"/>
+                        </g>
+                        
+                        <!-- MAC Layer -->
+                        <g class="mac-layer">
+                            <rect x="200" y="180" width="400" height="100" class="module"/>
+                            <text x="400" y="230" class="module-text">MAC Layer</text>
+                            <path d="M400,280 L400,330" class="connection"/>
+                        </g>
+                        
+                        <!-- PHY Layer -->
+                        <g class="phy-layer">
+                            <rect x="100" y="330" width="600" height="120" class="module"/>
+                            <text x="400" y="390" class="module-text">PHY Layer</text>
+                            <path d="M400,450 L400,500" class="connection"/>
+                        </g>
+                        
+                        <!-- Hardware Layer -->
+                        <g class="hw-layer">
+                            <rect x="50" y="500" width="700" height="60" class="module"/>
+                            <text x="400" y="535" class="module-text">Hardware Abstraction Layer</text>
+                        </g>
+                    </svg>
+                </div>
+            </section>
+
+            <section id="features">
+                <h2>Advanced Features</h2>
+                <div class="feature-grid">
+                    <div class="feature-item">
+                        <h3>Multi-Link Operation</h3>
+                        <div class="terminal-window">
+                            <pre class="code-sample">
+struct wifi67_mlo {
+    spinlock_t lock;
+    u8 state;
+    u32 capabilities;
+    struct list_head links;
+};</pre>
+                        </div>
+                    </div>
+                    <div class="feature-item">
+                        <h3>Power Management</h3>
+                        <div class="terminal-window">
+                            <pre class="code-sample">
+struct wifi67_power {
+    u8 state;
+    u32 policy;
+    bool emlsr_active;
+    bool emlps_enabled;
+};</pre>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section id="docs">
+                <h2>Documentation</h2>
+                <div class="doc-container">
+                    <div class="doc-nav">
+                        <div class="doc-item">Getting Started</div>
+                        <div class="doc-item">Driver Architecture</div>
+                        <div class="doc-item">MLO Implementation</div>
+                        <div class="doc-item">Power Management</div>
+                        <div class="doc-item">Hardware Support</div>
+                    </div>
+                    <div class="doc-content">
+                        <pre class="terminal-text">
+Select a documentation section from the menu...
+                        </pre>
+                    </div>
+                </div>
+            </section>
+
+            <section id="about">
+                <h2>About the Project</h2>
+                <div class="about-content">
+                    <div class="terminal-window">
+                        <pre class="about-text">
+PROJECT: Wi-Fi 6E/7 Linux Driver
+STATUS: Active Development
+LICENSE: GPL v2
+AUTHOR: Fayssal Chokri
+
+A next-generation wireless driver implementation
+focusing on high performance, reliability, and
+efficient power management.
+
+Key objectives:
+- Full Wi-Fi 7 specification support
+- Efficient multi-link operation
+- Advanced power saving features
+- Robust security implementation
+                        </pre>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+    <script src="js/main.js"></script>
+</body>
+</html> 
