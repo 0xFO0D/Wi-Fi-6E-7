@@ -16,6 +16,7 @@ wifi67-objs := \
     src/core/mlo.o \
     src/core/emlsr.o \
     src/core/emlps.o \
+    src/core/emlmr.o \
     src/hal/hardware.o \
     src/mac/mac_core.o \
     src/mac/wifi7_mac.o \
