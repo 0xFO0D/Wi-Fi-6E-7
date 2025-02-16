@@ -221,6 +221,8 @@ static void wifi7_mlo_metrics_work(struct work_struct *work)
 {
     struct wifi7_mlo *mlo = container_of(to_delayed_work(work),
                                        struct wifi7_mlo, metrics.work);
+    struct wifi67_radio_metrics radio_metrics;
+    struct wifi67_link_metrics link_metrics;
     int i;
     
     /* Update metrics for all links */
@@ -229,15 +231,23 @@ static void wifi7_mlo_metrics_work(struct work_struct *work)
             continue;
             
         /* Collect hardware metrics */
-        // TODO: Implement hardware metrics collection
-        
-        /* Update moving averages */
-        struct wifi7_mlo_metrics *metrics = &mlo->link.metrics[i];
-        metrics->rssi = (metrics->rssi * 7 + new_rssi) / 8;
-        metrics->noise = (metrics->noise * 7 + new_noise) / 8;
-        metrics->latency = (metrics->latency * 7 + new_latency) / 8;
-        metrics->jitter = (metrics->jitter * 7 + new_jitter) / 8;
-        metrics->loss = (metrics->loss * 7 + new_loss) / 8;
+        if (wifi67_get_radio_metrics(mlo->dev->priv, i, &radio_metrics) == 0) {
+            struct wifi7_mlo_metrics *metrics = &mlo->link.metrics[i];
+            metrics->rssi = radio_metrics.rssi;
+            metrics->noise = radio_metrics.noise;
+            metrics->temperature = radio_metrics.temperature;
+            metrics->tx_power = radio_metrics.tx_power;
+            metrics->busy = radio_metrics.busy_percent;
+        }
+
+        if (wifi67_get_link_metrics(mlo->dev->priv, i, &link_metrics) == 0) {
+            struct wifi7_mlo_metrics *metrics = &mlo->link.metrics[i];
+            metrics->quality = link_metrics.quality;
+            metrics->airtime = link_metrics.airtime;
+            metrics->latency = link_metrics.latency;
+            metrics->jitter = link_metrics.jitter;
+            metrics->loss = link_metrics.loss_percent;
+        }
     }
     
     /* Schedule next collection */
