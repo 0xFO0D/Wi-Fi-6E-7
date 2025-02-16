@@ -256,11 +256,12 @@ static void wifi7_mlo_metrics_work(struct work_struct *work)
                             msecs_to_jiffies(mlo->metrics.interval));
 }
 
-/* Power management work handler */
+/* Update power management work handler */
 static void wifi7_mlo_power_work(struct work_struct *work)
 {
     struct wifi7_mlo *mlo = container_of(to_delayed_work(work),
                                        struct wifi7_mlo, power.work);
+    struct wifi67_power_stats pwr_stats;
     int i;
     
     if (!mlo->power.enabled)
@@ -275,7 +276,15 @@ static void wifi7_mlo_power_work(struct work_struct *work)
         
         /* Put idle links to sleep */
         if (metrics->tx_packets == 0 && metrics->rx_packets == 0) {
-            // TODO: Implement link power save
+            if (wifi67_get_power_stats(mlo->dev->priv, i, &pwr_stats) == 0) {
+                if (pwr_stats.sleep_count == 0) {
+                    /* Link not sleeping, put it to sleep */
+                    wifi67_radio_sleep(mlo->dev->priv, i, WIFI67_SLEEP_LIGHT);
+                }
+            }
+        } else {
+            /* Wake up active links */
+            wifi67_radio_wake(mlo->dev->priv, i);
         }
     }
     
